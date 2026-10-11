@@ -35,6 +35,5 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          show_full_output: true
           claude_args: |
             --append-system-prompt "Write every GitHub comment, review and pull request description in Vietnamese. Code, identifiers and commit messages stay in English."
