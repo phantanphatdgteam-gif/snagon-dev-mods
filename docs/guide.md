@@ -245,7 +245,7 @@ Cost: typically a few US cents per session end, and only when the journal change
 
 ## 9. Path rules
 
-Always-on instructions live in `instructions/always/common/*.md`: coding style, git workflow, testing, performance, patterns, hooks, code review, development workflow and agents.
+Always-on instructions live in `instructions/always/common/*.md`: coding style, git workflow, testing, security, performance, patterns, hooks, code review, development workflow and agents (ten files).
 
 Path rules live in `instructions/paths/<language>/*.md`. A path rule loads once per session, when you read or edit a file that matches the `paths:` globs of the rule. The language folders are:
 

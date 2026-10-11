@@ -1,6 +1,6 @@
 # snagon-dev-mods
 
-Version 0.4.0. Vietnamese version: [README.vi.md](README.vi.md). Full guide: [docs/guide.md](docs/guide.md).
+Version 0.4.1. Vietnamese version: [README.vi.md](README.vi.md). Full guide: [docs/guide.md](docs/guide.md).
 
 ## What it is
 
@@ -16,6 +16,54 @@ snagon-dev-mods is a Claude Code "mod": a plugin whose hooks run in one hooks mo
 - Cost notices, a compaction suggestion and a status line with session cost and context use.
 - Always-on coding instructions, plus path rules per language that load when you touch a matching file.
 - 64 skills, 66 agents and 43 commands, mostly from everything-claude-code.
+
+## How it works
+
+```mermaid
+flowchart TD
+  A["Session start"] --> B["Prompt"]
+  B --> C["Tool call"]
+  C --> B
+  B --> D["Stop"]
+  D --> E["Session end"]
+  B -.->|context grows| F["Compaction"]
+  F --> B
+  A --- A1["Check sqlite3<br/>register memory tools"]
+  B --- B1["Add rules, memory digest<br/>and latest handoff"]
+  C --- C1["Before: gate and git guard<br/>After: record edits, notices"]
+  D --- D1["Hold once for a<br/>journal entry"]
+  F --- F1["Write journal entry before<br/>add journal tail after"]
+  E --- E1["Start handoff writer<br/>copy decisions to memory"]
+```
+
+See [docs/files.md](docs/files.md) for the module behind each step and [docs/workflow.md](docs/workflow.md) for a full session.
+
+## Strengths
+
+| Plain Claude Code | With snagon-dev-mods |
+|-------------------|----------------------|
+| A new session does not know where the last one stopped unless you tell it | Journal, handoff and memory digest carry context to the next session by themselves |
+| Memory, when enabled, is free-form Markdown notes | Typed entries (decision, lesson, feedback, fact and more) per project, out of git, with full-text search |
+| Permission prompts ask whether a tool may run | The gate also makes the agent state the facts (files touched, rollback, your instruction) before first edits and destructive commands |
+| Nothing stops a commit that skips git hooks or carries a key | Hook-bypass flags are refused, and commits and pushes are scanned for secrets and private files |
+| Cost is shown when you ask for it | Status line, cost notices, compaction suggestion, per-turn cost log |
+| You write all the rules yourself | Ten always-on instruction files, path rules for 21 stacks, and `/snagon-setup` |
+
+- Needs only Claude Code: one hooks module, no Node.js, npm, MCP server or background service. Works on macOS and Linux.
+- Memory is private and searchable: SQLite full-text search with accents ignored, a plain scan as fallback, and secrets refused.
+- Refusals name the file and the kind of secret, never the value.
+- `/snagon-setup` removes anything the harness or your files already say, and keeps personal preferences out of git.
+- Degrades gracefully: without sqlite3 it still works, missing tools are reported with the exact install command, and every hook step fails safe.
+- Includes 64 skills, 66 agents and 43 commands for planning, TDD, review, docs, cost and learning.
+- Tested and open: 89 automated tests plus real-tool checks, MIT licence, credits to the sources.
+
+## Documentation
+
+- [docs/files.md](docs/files.md): what every file does.
+- [docs/workflow.md](docs/workflow.md): a project from idea to result, and one session from start to end.
+- [docs/guide.md](docs/guide.md): the full guide.
+- [README.vi.md](README.vi.md): Vietnamese README.
+- [docs/vi/files.md](docs/vi/files.md) and [docs/vi/workflow.md](docs/vi/workflow.md): the Vietnamese versions of the two pages above.
 
 ## Requirements
 

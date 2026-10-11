@@ -17,6 +17,54 @@ snagon-dev-mods là một "mod" cho Claude Code: một plugin có các hook ch�
 - Hướng dẫn lập trình luôn bật, cùng quy tắc theo đường dẫn cho từng ngôn ngữ, nạp khi bạn đụng đến tệp phù hợp.
 - 64 skill, 66 agent và 43 lệnh, phần lớn lấy từ everything-claude-code.
 
+## Cách hoạt động
+
+```mermaid
+flowchart TD
+  A["Bắt đầu phiên"] --> B["Prompt"]
+  B --> C["Gọi công cụ"]
+  C --> B
+  B --> D["Dừng"]
+  D --> E["Kết thúc phiên"]
+  B -.->|ngữ cảnh đầy dần| F["Nén ngữ cảnh"]
+  F --> B
+  A --- A1["Kiểm tra sqlite3<br/>đăng ký công cụ bộ nhớ"]
+  B --- B1["Thêm quy tắc, memory digest<br/>và bản bàn giao mới nhất"]
+  C --- C1["Trước: cổng và git guard<br/>Sau: ghi lại các lần sửa, thông báo"]
+  D --- D1["Giữ lại một lần để<br/>viết mục nhật ký"]
+  F --- F1["Viết mục nhật ký trước<br/>thêm đuôi nhật ký sau"]
+  E --- E1["Khởi động tiến trình viết bàn giao<br/>chép các quyết định vào bộ nhớ"]
+```
+
+Xem [docs/vi/files.md](docs/vi/files.md) để biết module nào đứng sau mỗi bước và [docs/vi/workflow.md](docs/vi/workflow.md) để xem một phiên đầy đủ.
+
+## Điểm mạnh
+
+| Claude Code thuần | Với snagon-dev-mods |
+|-------------------|----------------------|
+| Phiên mới không biết phiên trước dừng ở đâu trừ khi bạn nói | Nhật ký, bản bàn giao và memory digest tự chuyển ngữ cảnh sang phiên sau |
+| Bộ nhớ, khi bật, là các ghi chú Markdown tự do | Các mục có kiểu (quyết định, bài học, phản hồi, sự việc và nhiều loại khác) theo từng dự án, không nằm trong git, có tìm kiếm toàn văn |
+| Hộp thoại quyền hỏi xem một công cụ có được chạy không | Cổng còn bắt agent nêu sự việc (tệp bị đụng đến, cách khôi phục, chỉ dẫn của bạn) trước các lần sửa đầu tiên và các lệnh phá hủy |
+| Không gì chặn một commit bỏ qua hook của git hoặc mang theo khóa | Cờ bỏ qua hook bị từ chối, còn commit và push được quét để tìm bí mật và tệp riêng tư |
+| Chi phí chỉ hiện khi bạn hỏi | Thanh trạng thái, thông báo chi phí, gợi ý nén ngữ cảnh, nhật ký chi phí từng lượt |
+| Bạn tự viết mọi quy tắc | Mười tệp hướng dẫn luôn bật, quy tắc theo đường dẫn cho 21 stack, và `/snagon-setup` |
+
+- Chỉ cần Claude Code: một module hook, không Node.js, npm, máy chủ MCP hay dịch vụ chạy nền. Chạy trên macOS và Linux.
+- Bộ nhớ riêng tư và tìm kiếm được: tìm kiếm toàn văn SQLite bỏ qua dấu, quét thường làm phương án dự phòng, và từ chối bí mật.
+- Thông báo từ chối nêu tên tệp và loại bí mật, không bao giờ nêu giá trị.
+- `/snagon-setup` loại bỏ mọi điều harness hoặc tệp của bạn đã nói, và giữ sở thích cá nhân ngoài git.
+- Suy giảm êm: thiếu sqlite3 vẫn chạy, công cụ còn thiếu được báo kèm lệnh cài chính xác, và mọi bước hook đều thất bại một cách an toàn.
+- Gồm 64 skill, 66 agent và 43 lệnh cho lập kế hoạch, TDD, rà soát, tài liệu, chi phí và học hỏi.
+- Đã kiểm thử và mở: 89 test tự động cùng các bước kiểm tra với công cụ thật, giấy phép MIT, ghi công các nguồn.
+
+## Tài liệu
+
+- [docs/files.md](docs/files.md): mỗi tệp làm gì.
+- [docs/workflow.md](docs/workflow.md): một dự án từ ý tưởng đến kết quả, và một phiên từ đầu đến cuối.
+- [docs/guide.md](docs/guide.md): hướng dẫn đầy đủ.
+- [README.vi.md](README.vi.md): README tiếng Việt.
+- [docs/vi/files.md](docs/vi/files.md) và [docs/vi/workflow.md](docs/vi/workflow.md): bản tiếng Việt của hai trang trên.
+
 ## Yêu cầu
 
 - Claude Code 2.1.296 trở lên (phiên bản chạy được module hook).

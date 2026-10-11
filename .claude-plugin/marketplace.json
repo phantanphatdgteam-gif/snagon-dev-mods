@@ -6,14 +6,14 @@
   },
   "metadata": {
     "description": "snagon-dev-mods: a coding-agent harness mod for Claude Code (project memory, safety gate, journal and handoff, setup interview, skills, agents and commands).",
-    "version": "0.4.0"
+    "version": "0.4.1"
   },
   "plugins": [
     {
       "name": "snagon-dev-mods",
       "source": "./",
       "description": "Coding-agent harness for Claude Code: setup interview, project memory, safety gate, journal and handoff, plus skills, agents and commands.",
-      "version": "0.4.0",
+      "version": "0.4.1",
       "category": "development"
     }
   ]

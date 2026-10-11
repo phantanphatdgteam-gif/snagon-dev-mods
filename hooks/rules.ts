@@ -1,4 +1,4 @@
-// Pure helpers of snagon-dev-mods's register module: how project 535's instruction files and path rules are read.
+// Pure helpers of snagon-dev-mods's register module: how instruction files and path rules are read.
 
 /** A rule under instructions/paths/: loaded the first time a matching file is read or edited in a session. */
 export type PathRule = { id: string; path: string; globs: readonly string[]; body: string }

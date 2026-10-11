@@ -1,4 +1,4 @@
-// snagon-dev-mods module: the coding-agent harness of project 535 as a Claude Code mod that needs nothing but Claude Code.
+// snagon-dev-mods module: a coding-agent harness as a Claude Code mod that needs nothing but Claude Code.
 // It loads the instruction files and path rules, keeps a per-project memory (SQLite FTS5 over a JSONL file, outside
 // git), guards tool calls (fact-forcing gate, git hook bypass, lint configs, secrets before git commit or push), keeps
 // the session journal honest (stop reminder, compaction entry, journal tail after compaction), writes the handoff at
