@@ -177,6 +177,7 @@ The agent sees a refusal with the reason. These are not allowed:
 - A `git commit` or `git push` that would add a secret or a private path. Private paths are `.snagon/`, `.env` files (except `.env.example`, `.env.sample`, `.env.template`, `.env.dist`), `.pem`, `.key`, `.p12` and `.pfx` files, `id_*` keys, and memory files. The refusal names the file and the kind, never the value.
 - Staging and committing in one command, such as `git add -A && git commit`.
 - `git commit` or `git push` run after `cd`, with `-C`, `--git-dir` or `--work-tree`, or inside `sh -c`, `eval`, `env`, `xargs` and similar wrappers.
+- `git commit` or `git push` through a git alias (given with `-c alias.…` or set in git config, chains included), through a shell alias that hands its words to git or a shell, with the command word quoted or in a variable (`"git" push`, `git "push"`, `$G push`, `git $(echo push)`), through git subcommands that run other commands (`submodule foreach`, `rebase -x`, `bisect run`), or as an unknown command when `help.autocorrect` would run the closest one. An environment prefix (`A=1 git push`), line breaks and shell syntax (`(git push)`, `then git commit`, functions, `case`) do not hide git from the guard.
 - A push when more than 500 local commits are not on any remote.
 - A commit or push when git itself fails.
 
@@ -322,7 +323,7 @@ claude plugin test .
 claude plugin validate .
 ```
 
-`claude plugin test .` runs 93 tests. Two developer checks use the real sqlite3 and the real install script on fake `PATH` values:
+`claude plugin test .` runs 97 tests. Two developer checks use the real sqlite3 and the real install script on fake `PATH` values:
 
 ```
 node tests/sqlite.check.mjs

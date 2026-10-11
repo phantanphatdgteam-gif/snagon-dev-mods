@@ -18,6 +18,7 @@ snagon-dev-mods/
 │   ├── memory-core.ts         pure memory logic
 │   ├── memory.ts              memory on real files and sqlite3
 │   ├── gate.ts                fact-forcing gate, git guard, lint protection
+│   ├── git-intent.ts          which git commands a Bash command runs (prefixes, shell syntax, aliases)
 │   ├── secrets.ts             secret patterns, private paths, diff scan
 │   ├── journal.ts             journal files, stop reminder, compaction entry
 │   ├── handoff.ts             end-of-session handoff
@@ -34,7 +35,7 @@ snagon-dev-mods/
 ├── skills/                    64 skills, including snagon-setup
 ├── agents/                    66 agents
 ├── commands/                  43 commands
-├── tests/                     93 tests and two developer checks
+├── tests/                     97 tests and two developer checks
 ├── docs/                      guide.md, files.md, workflow.md, vi/
 ├── README.md, README.vi.md    overview in English and Vietnamese
 ├── CREDITS.md                 credits
@@ -61,6 +62,7 @@ snagon-dev-mods/
 | `hooks/memory-core.ts` | Logic bộ nhớ thuần: kiểm tra và giới hạn mục, bảy loại mục, làm sạch ký tự điều khiển, dựng SQL có đặt dấu nháy, dựng truy vấn FTS5, tìm kiếm quét thường có bỏ dấu, văn bản digest, các dòng quyết định và bài học đọc từ nhật ký | `memory.ts` gọi |
 | `hooks/memory.ts` | Bộ nhớ trên tệp thật và sqlite3: đường dẫn dưới `.snagon/memory`, đồng bộ chỉ mục SQLite từ tệp JSONL (tăng dần, dựng lại khi tệp nhỏ đi), lưu, tìm, lấy, digest lúc bắt đầu, nhập từ nhật ký, ba định nghĩa công cụ | Bắt đầu phiên, mỗi prompt, các lần gọi công cụ bộ nhớ, kết thúc phiên |
 | `hooks/gate.ts` | Quyết định buộc nêu sự việc (lần sửa hoặc tạo tệp đầu tiên, lệnh Bash đầu tiên, lệnh phá hủy; `.snagon/` được miễn), kiểm tra bỏ qua hook của git, ý định git (commit, commit -a, commit kèm đường dẫn, staging, push, repository khác, git được bọc), quét bí mật và đường dẫn riêng tư trước commit hoặc push, nhắc khi push, bảo vệ cấu hình lint và formatter | Trước và sau mỗi lần gọi công cụ |
+| `hooks/git-intent.ts` | Đọc lệnh git mà một lệnh Bash sẽ chạy: biến môi trường đứng trước, xuống dòng, cú pháp shell, tên lệnh trong ngoặc kép hoặc biến, alias trên dòng lệnh và trong cấu hình git (cả chuỗi alias, alias shell), `help.autocorrect`, nguồn và tag được push | `gate.ts` và `register.ts` gọi |
 | `hooks/secrets.ts` | Mẫu bí mật (khóa riêng, khóa Anthropic, OpenAI, GitHub, AWS, Slack, Google, mật khẩu trong dấu nháy), đường dẫn riêng tư, quét diff nêu tên tệp và loại nhưng không bao giờ nêu giá trị | Trước commit hoặc push, và khi `memory_save` |
 | `hooks/journal.ts` | Thư mục và tệp nhật ký, những lần sửa nào xảy ra sau mục nhật ký cuối, văn bản nhắc khi dừng, mục nhật ký khi nén ngữ cảnh, phần đuôi nhật ký sau khi nén (60 dòng cuối), bộ phát hiện cụm từ đi tắt (ví dụ "skip the tests for now") để hiện toast | Dừng, nén ngữ cảnh |
 | `hooks/handoff.ts` | Prompt bàn giao, che các dòng trông giống bí mật và khối khóa riêng, kế hoạch (khi nhật ký có thay đổi), script tiến trình tách rời, tìm bản bàn giao mới nhất cho phiên sau | Kết thúc phiên, mỗi prompt |
@@ -101,7 +103,7 @@ Lấy nguyên vẹn từ everything-claude-code (MIT).
 
 | Tệp | Làm gì | Chạy hoặc được đọc khi nào |
 |------|--------------|-------------------------|
-| `tests/*.test.ts` | 93 test: cổng, ý định git, bí mật, lõi bộ nhớ, nhật ký, bàn giao, chi phí, cấu hình, trình cài đặt, và cả module với một Claude Code giả lập | `claude plugin test .` |
+| `tests/*.test.ts` | 97 test: cổng, ý định git, bí mật, lõi bộ nhớ, nhật ký, bàn giao, chi phí, cấu hình, trình cài đặt, và cả module với một Claude Code giả lập | `claude plugin test .` |
 | `tests/sqlite.check.mjs` | Bước kiểm tra cho lập trình viên với sqlite3 thật | Chạy thủ công, cần Node.js |
 | `tests/install.check.mjs` | Bước kiểm tra cho lập trình viên với script cài đặt thật | Chạy thủ công, cần Node.js |
 

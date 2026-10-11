@@ -241,8 +241,8 @@ describe('register', () => {
   })
 
   test('a push is checked against every unpushed commit; deleting a private file is allowed', async ($, on) => {
-    const range = '--branches --not --remotes --max-count=500'
-    world(on, { files: PLUGIN_FILES, git: { 'rev-list --count --branches --not --remotes': '3\n', [`log --name-only --format= --diff-filter=d ${range}`]: 'app.py\n', [`log -p -U0 --no-color --no-ext-diff --format= ${range}`]: ['diff --git a/app.py b/app.py', '+++ b/app.py', '@@ -1 +1 @@', `+K = "${FAKE_TOKEN}"`].join('\n') } })
+    const range = 'HEAD --branches feature --not --remotes --max-count=500'
+    world(on, { files: PLUGIN_FILES, git: { 'rev-list --count HEAD --branches feature --not --remotes': '3\n', [`log --name-only --format= --diff-filter=d ${range}`]: 'app.py\n', [`log -p -U0 --no-color --no-ext-diff --format= ${range}`]: ['diff --git a/app.py b/app.py', '+++ b/app.py', '@@ -1 +1 @@', `+K = "${FAKE_TOKEN}"`].join('\n') } })
     await $.session.start(SESSION)
     await $.tool.call({ tool: 'Bash', command: 'ls' } as never)
     const pushed = await $.tool.call({ tool: 'Bash', command: 'git push origin feature' } as never)
@@ -315,7 +315,7 @@ describe('register', () => {
   })
 
   test('a push with more unpushed commits than the guard checks is refused', async ($, on) => {
-    world(on, { files: PLUGIN_FILES, git: { 'rev-list --count --branches --not --remotes': '501\n' } })
+    world(on, { files: PLUGIN_FILES, git: { 'rev-list --count HEAD --branches --not --remotes': '501\n' } })
     await $.session.start(SESSION)
     await $.tool.call({ tool: 'Bash', command: 'ls' } as never)
     const out = await $.tool.call({ tool: 'Bash', command: 'git push' } as never)

@@ -18,6 +18,7 @@ snagon-dev-mods/
 │   ├── memory-core.ts         pure memory logic
 │   ├── memory.ts              memory on real files and sqlite3
 │   ├── gate.ts                fact-forcing gate, git guard, lint protection
+│   ├── git-intent.ts          which git commands a Bash command runs (prefixes, shell syntax, aliases)
 │   ├── secrets.ts             secret patterns, private paths, diff scan
 │   ├── journal.ts             journal files, stop reminder, compaction entry
 │   ├── handoff.ts             end-of-session handoff
@@ -34,7 +35,7 @@ snagon-dev-mods/
 ├── skills/                    64 skills, including snagon-setup
 ├── agents/                    66 agents
 ├── commands/                  43 commands
-├── tests/                     93 tests and two developer checks
+├── tests/                     97 tests and two developer checks
 ├── docs/                      guide.md, files.md, workflow.md, vi/
 ├── README.md, README.vi.md    overview in English and Vietnamese
 ├── CREDITS.md                 credits
@@ -61,6 +62,7 @@ snagon-dev-mods/
 | `hooks/memory-core.ts` | Pure memory logic: entry validation and limits, the seven kinds, control-character cleaning, SQL building with quoting, FTS5 query building, plain-scan search with accent folding, the digest text, decision and lesson lines read from a journal | Called by `memory.ts` |
 | `hooks/memory.ts` | Memory on real files and sqlite3: paths under `.snagon/memory`, syncing the SQLite index from the JSONL file (incremental, rebuild when the file shrank), save, search, get, the start digest, the journal import, the three tool definitions | Session start, each prompt, memory tool calls, session end |
 | `hooks/gate.ts` | Fact-forcing decisions (first edit or creation of a file, first Bash command, destructive commands; `.snagon/` exempt), git hook-bypass check, git intent (commit, commit -a, commit with paths, staging, push, other repository, wrapped git), secret and private-path scan before commit or push, push reminder, lint and formatter config protection | Before and after each tool call |
+| `hooks/git-intent.ts` | Reads which git commands a Bash command runs: environment prefixes, line breaks, shell syntax, quoted or variable command words, aliases on the command line and in git config (chains, shell aliases), `help.autocorrect`, push sources and tags | Called by `gate.ts` and `register.ts` |
 | `hooks/secrets.ts` | Secret patterns (private keys, Anthropic, OpenAI, GitHub, AWS, Slack, Google keys, quoted passwords), private paths, diff scan that names file and kind but never the value | Before commit or push, and on `memory_save` |
 | `hooks/journal.ts` | Journal folder and files, which edits happened after the last journal entry, stop reminder text, compaction entry, journal tail after a compaction (last 60 lines), shortcut-phrase detector (for example "skip the tests for now") that shows a toast | Stop, compaction |
 | `hooks/handoff.ts` | Handoff prompt, redaction of secret-looking lines and private-key blocks, the plan (when the journal changed), the detached worker script, finding the latest handoff for the next session | Session end, each prompt |
@@ -101,7 +103,7 @@ Taken unchanged from everything-claude-code (MIT).
 
 | File | What it does | When it runs or is read |
 |------|--------------|-------------------------|
-| `tests/*.test.ts` | 93 tests: gate, git intent, secrets, memory core, journal, handoff, usage, config, installer, and the whole module with a simulated Claude Code | `claude plugin test .` |
+| `tests/*.test.ts` | 97 tests: gate, git intent, secrets, memory core, journal, handoff, usage, config, installer, and the whole module with a simulated Claude Code | `claude plugin test .` |
 | `tests/sqlite.check.mjs` | Developer check with real sqlite3 | Run by hand, needs Node.js |
 | `tests/install.check.mjs` | Developer check with the real install script | Run by hand, needs Node.js |
 

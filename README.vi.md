@@ -1,6 +1,6 @@
 # snagon-dev-mods
 
-Phiên bản 0.4.0. Bản tiếng Anh: [README.md](README.md). Hướng dẫn đầy đủ (tiếng Anh): [docs/guide.md](docs/guide.md).
+Phiên bản 0.4.3. Bản tiếng Anh: [README.md](README.md). Hướng dẫn đầy đủ (tiếng Anh): [docs/guide.md](docs/guide.md).
 
 ## Đây là gì
 
@@ -55,7 +55,7 @@ Xem [docs/vi/files.md](docs/vi/files.md) để biết module nào đứng sau m�
 - `/snagon-setup` loại bỏ mọi điều harness hoặc tệp của bạn đã nói, và giữ sở thích cá nhân ngoài git.
 - Suy giảm êm: thiếu sqlite3 vẫn chạy, công cụ còn thiếu được báo kèm lệnh cài chính xác, và mọi bước hook đều thất bại một cách an toàn.
 - Gồm 64 skill, 66 agent và 43 lệnh cho lập kế hoạch, TDD, rà soát, tài liệu, chi phí và học hỏi.
-- Đã kiểm thử và mở: 93 test tự động cùng các bước kiểm tra với công cụ thật, giấy phép MIT, ghi công các nguồn.
+- Đã kiểm thử và mở: 97 test tự động cùng các bước kiểm tra với công cụ thật, giấy phép MIT, ghi công các nguồn.
 
 ## Tài liệu
 

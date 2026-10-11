@@ -2,13 +2,13 @@
 // session and every destructive command (logic and messages vendored, see vendor/); git hook-bypass flags always
 // refused; lint and formatter configs protected; and a secret and private-path scan before git commit or push.
 import {
-  condensedGateMsg, destructiveBashMsg, editGateMsg, findGitSubcommand, isClaudeSettingsPath, isDestructiveBash,
-  isReadOnlyGitIntrospection, routineShellMsg, splitCommandSegments, tokenize, writeGateMsg,
+  condensedGateMsg, destructiveBashMsg, editGateMsg, isClaudeSettingsPath, isDestructiveBash,
+  isReadOnlyGitIntrospection, routineShellMsg, writeGateMsg,
 } from './vendor/destructive'
-import { stripHeredocBodies } from './vendor/heredoc'
 import { checkCommand } from './vendor/no-verify'
 import { hashOf, type Io } from './session'
 import { isForbiddenPath, scanDiff } from './secrets'
+import type { GitIntent } from './git-intent'
 
 export type GateState = { checked: readonly string[]; denials: number }
 export type GateCall = { tool: string; file_path?: unknown; command?: unknown; edits?: unknown; agentId?: unknown }
@@ -75,69 +75,7 @@ export function noVerifyReason(command: string): string | null {
   return r.blocked ? r.reason ?? 'BLOCKED: git hook bypass flag.' : null
 }
 
-export type GitIntent = { commit: boolean; commitAll: boolean; commitPaths: boolean; push: boolean; staging: boolean; otherRepo: boolean; indirect: boolean }
-
-// Wrappers that run a git command the guard cannot read: sh -c 'git commit', eval, xargs git push, env X=1 git commit ...
-const WRAPPERS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh', 'fish', 'eval', 'env', 'xargs', 'command', 'exec', 'nohup', 'time', 'sudo', 'nice', 'timeout', 'watch', 'parallel'])
-const WRAPPED_GIT = /\bgit\b[^;&|]*\b(commit|push)\b/
-
-// git commit options that take a value (so the value is not a pathspec)
-const COMMIT_VALUE_OPTIONS = new Set(['-m', '--message', '-F', '--file', '-C', '--reuse-message', '-c', '--reedit-message', '--author', '--date', '--template', '-t', '--fixup', '--squash', '--trailer', '--cleanup', '-S', '--gpg-sign'])
-const COMMIT_SHORT_VALUE = new Set(['m', 'F', 'C', 'c', 't'])
-
-/** Reads a commit's arguments: whether it commits all tracked changes, or named paths (both widen what it commits). */
-export function commitShape(rest: readonly string[]): { all: boolean; paths: boolean } {
-  let all = false, paths = false
-  for (let i = 0; i < rest.length; i += 1) {
-    const a = rest[i] ?? ''
-    if (a === '--') { paths = paths || i + 1 < rest.length; break }
-    if (a === '--all') { all = true; continue }
-    if (a === '--include' || a === '--only' || a === '-i' || a === '-o' || a.startsWith('--pathspec-from-file')) { paths = true; if (a === '--pathspec-from-file') i += 1; continue }
-    if (COMMIT_VALUE_OPTIONS.has(a)) { i += 1; continue }
-    if (a.startsWith('--')) continue
-    if (/^-[A-Za-z]+$/.test(a)) {
-      const letters = a.slice(1)
-      for (let j = 0; j < letters.length; j += 1) {
-        const ch = letters[j] ?? ''
-        if (ch === 'a') all = true
-        if (COMMIT_SHORT_VALUE.has(ch)) { if (j === letters.length - 1) i += 1; break } // the rest of the cluster, or the next word, is the value
-      }
-      continue
-    }
-    if (a.startsWith('-')) continue
-    paths = true
-  }
-  return { all, paths }
-}
-
-/** Which git commands a Bash command runs (heredoc bodies and quoted text are data, not commands). */
-export function gitIntent(command: string): GitIntent {
-  const out: GitIntent = { commit: false, commitAll: false, commitPaths: false, push: false, staging: false, otherRepo: false, indirect: false }
-  let changedDir = false
-  const text = stripHeredocBodies(command) as string // quoted text stays here; the segments below have it blanked
-  for (const segment of splitCommandSegments(text) as string[]) {
-    const tokens = tokenize(segment) as string[]
-    const head = (tokens[0] ?? '').replace(/^\(+/, '')
-    const base = head.slice(head.lastIndexOf('/') + 1)
-    if (base === 'cd' || base === 'pushd') changedDir = true
-    if (WRAPPERS.has(base) && WRAPPED_GIT.test(text)) out.indirect = true
-    const git = findGitSubcommand(tokens) as { command?: string; rest?: string[] } | null
-    if (!git?.command) continue
-    const globals = tokens.slice(1, tokens.length - (git.rest ?? []).length - 1)
-    const elsewhere = globals.some(t => t === '-C' || t === '--git-dir' || t === '--work-tree' || t.startsWith('--git-dir=') || t.startsWith('--work-tree='))
-    if (git.command === 'add' || git.command === 'rm' || git.command === 'mv' || git.command === 'stage') out.staging = true
-    if (git.command === 'commit') {
-      out.commit = true
-      const shape = commitShape(git.rest ?? [])
-      if (shape.all) out.commitAll = true
-      if (shape.paths) out.commitPaths = true
-      if (elsewhere) out.otherRepo = true
-    }
-    if (git.command === 'push') { out.push = true; if (elsewhere) out.otherRepo = true }
-  }
-  if (changedDir && (out.commit || out.push)) out.otherRepo = true
-  return out
-}
+export { gitIntent, gitAliasReason, commitShape, ALIAS_REASON, type GitIntent } from './git-intent'
 
 export const SPLIT_REASON = '[git guard] This command stages files and commits in the same call, so what it would commit cannot be checked before it runs. Run the git add (or git rm / git mv) as its own command first, then git commit.'
 export const OTHER_REPO_REASON = '[git guard] Run git commit and git push from the project folder, without cd, -C, --git-dir or --work-tree, so the guard can check what would be published.'
@@ -198,9 +136,11 @@ export async function gitSecretReason(io: Io, root: string, intent: GitIntent): 
     diff += await read(['diff', ...base, '-U0', '--no-color', '--no-ext-diff'])
   }
   if (intent.push) {
-    // Every local commit no remote has yet, on any branch: whatever refspec the push names is among them.
-    const range = ['--branches', '--not', '--remotes', `--max-count=${PUSH_SCAN_MAX}`]
-    const count = Number((await read(['rev-list', '--count', '--branches', '--not', '--remotes'])).trim())
+    // Every local commit no remote has yet, on any branch or a detached HEAD (and tags when the push sends tags):
+    // whatever refspec the push names is among them.
+    const reach = ['HEAD', '--branches', ...(intent.pushTags ? ['--tags'] : []), ...intent.pushRefs, '--not', '--remotes']
+    const range = [...reach, `--max-count=${PUSH_SCAN_MAX}`]
+    const count = Number((await read(['rev-list', '--count', ...reach])).trim())
     if (count > PUSH_SCAN_MAX) return `[git guard] ${count} local commits are not on any remote, more than the ${PUSH_SCAN_MAX} this guard checks, so the push is refused. Ask the user to review and push these by hand.`
     names.push(...(await read(['log', '--name-only', '--format=', '--diff-filter=d', ...range])).split('\n'))
     diff += await read(['log', '-p', '-U0', '--no-color', '--no-ext-diff', '--format=', ...range])

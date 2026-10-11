@@ -1,6 +1,6 @@
 # snagon-dev-mods
 
-Version 0.4.1. Vietnamese version: [README.vi.md](README.vi.md). Full guide: [docs/guide.md](docs/guide.md).
+Version 0.4.3. Vietnamese version: [README.vi.md](README.vi.md). Full guide: [docs/guide.md](docs/guide.md).
 
 ## What it is
 
@@ -55,7 +55,7 @@ See [docs/files.md](docs/files.md) for the module behind each step and [docs/wor
 - `/snagon-setup` removes anything the harness or your files already say, and keeps personal preferences out of git.
 - Degrades gracefully: without sqlite3 it still works, missing tools are reported with the exact install command, and every hook step fails safe.
 - Includes 64 skills, 66 agents and 43 commands for planning, TDD, review, docs, cost and learning.
-- Tested and open: 93 automated tests plus real-tool checks, MIT licence, credits to the sources.
+- Tested and open: 97 automated tests plus real-tool checks, MIT licence, credits to the sources.
 
 ## Documentation
 

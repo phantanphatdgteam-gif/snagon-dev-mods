@@ -12,7 +12,7 @@ import { journalDir, journalFiles, editsAfter, withEdit, stopReason, compactEntr
 import { planHandoff, spawnHandoff, latestHandoff } from './handoff'
 import { ensureSqlite, installNotice, agentNotice } from './install'
 import { bareAddressCount, addressReminder } from './address'
-import { gateDecision, noVerifyReason, gitIntent, gitSecretReason, isProtectedConfig, configReason, PUSH_REMINDER, SPLIT_REASON, OTHER_REPO_REASON, INDIRECT_REASON } from './gate'
+import { gateDecision, noVerifyReason, gitIntent, gitAliasReason, gitSecretReason, isProtectedConfig, configReason, PUSH_REMINDER, SPLIT_REASON, OTHER_REPO_REASON, INDIRECT_REASON } from './gate'
 import { usageNotices, statusText, subagentReminder } from './usage'
 
 type Host = CoreEngineInterface
@@ -92,6 +92,8 @@ async function guard($: Host, e: Record<string, unknown>, tool: string): Promise
     if (intent.commit && intent.staging) return SPLIT_REASON
     if (intent.otherRepo) return OTHER_REPO_REASON
     if (intent.indirect) return INDIRECT_REASON
+    const alias = await gitAliasReason(ioOf($), f.root, intent.aliases)
+    if (alias) return alias
     if (intent.commit || intent.push) {
       const leak = await gitSecretReason(ioOf($), f.root, intent)
       if (leak) return leak
