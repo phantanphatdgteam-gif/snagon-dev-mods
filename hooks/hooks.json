@@ -1,0 +1,4 @@
+{
+  "description": "snagon-dev-mods: everything runs in the hooks module (no Node needed)",
+  "modules": ["./register.ts"]
+}

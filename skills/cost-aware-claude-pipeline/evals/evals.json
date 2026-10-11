@@ -1,0 +1,51 @@
+{
+  "skill_name": "cost-aware-claude-pipeline",
+  "evals": [
+    {
+      "id": 0,
+      "prompt": "Script Python của mình chạy mỗi đêm để phân loại khoảng 50.000 tin nhắn khách hàng. Hiện tại nó gọi claude-3-5-haiku-20241022 cho tất cả, system prompt khoảng 3.000 token dùng chung cho mọi tin nhắn, và mình tự viết vòng retry 5 lần bắt mọi Exception. Viết lại phần gọi Claude API cho rẻ hơn mà vẫn ổn định, có theo dõi chi phí và dừng lại khi vượt ngân sách 20 USD mỗi đêm. Trả lời bằng code Python kèm giải thích ngắn.",
+      "expected_output": "Replaces the retired Haiku 3.5 with claude-haiku-4-5, moves the unattended nightly job to the Message Batches API (50% off), drops the catch-all retry loop in favour of SDK max_retries, notes the 3K-token prompt is below Haiku 4.5's 4096-token cache minimum, and tracks cost from usage tokens with a budget stop.",
+      "files": []
+    },
+    {
+      "id": 1,
+      "prompt": "Our RAG answer service runs on claude-opus-4-8 with a 3,000-token system prompt that is identical on every request. About 2M requests a month and users wait for each answer. Finance says the Claude bill is too high. What should we change first, in what order, and what do Claude Opus 5.5 and Claude Sonnet 5.5 cost per million input and output tokens?",
+      "expected_output": "Puts prompt caching first (the 3K prefix is above the minimum), recommends moving Opus 4.8 to the cheaper Opus 5.5 before any step-down, sweeps effort before switching tiers, and quotes Opus 5.5 at $4/$20 and Sonnet 5.5 at $2/$10 per 1M tokens; batch is not a fit because users wait.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "Trong Claude Code mình sắp giao việc cho 3 subagent: (1) quét khoảng 300 file để tìm chỗ còn gọi model cũ, (2) sửa code theo kế hoạch đã được duyệt, (3) review bảo mật phần xử lý thanh toán. Mỗi subagent nên đặt tham số model nào cho tiết kiệm mà không ảnh hưởng chất lượng? Nếu không đặt model thì subagent chạy bằng model gì?",
+      "expected_output": "Assigns haiku to the 300-file scan, sonnet to implementing the approved plan, opus to the payment security review, and explains that an unset model falls back to the agent definition, then CLAUDE_CODE_SUBAGENT_MODEL, then the session model (usually Opus 5.5).",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "Mình dùng Claude Code 2.1.292 và sắp giao 3 việc cho subagent: (1) quét khoảng 200 file log để gom các lỗi timeout, (2) nghiên cứu, đối chiếu nhiều nguồn để xác minh thể lệ và bảng giải thưởng của một trò xổ số rồi viết đặc tả, (3) review tính đúng đắn của module tính tiền thưởng. Mỗi subagent nên đặt model và effort thế nào để tiết kiệm mà vẫn đủ chất lượng, và đặt effort ở đâu?",
+      "expected_output": "Sets model and effort on each Agent call through its `effort` parameter (Claude Code 2.1.292+): haiku with no effort for the log scan (Haiku 4.5 has no effort level), sonnet or opus at `high` for the multi-source verification that becomes a spec (`max` only when the owner asks or a wrong answer is expensive, since knowledge work has nearly flat effort curves), and opus at `high` to `max` for the prize-calculation correctness review. It does not edit settings.json for a per-task choice, and notes that precedence against settings `modelSettings` is undocumented, so the effort should be checked in `/tasks`.",
+      "files": [],
+      "expectations": [
+        "Sets each subagent's effort through the Agent tool's per-call `effort` parameter, not through settings.json, `modelSettings` or an environment variable",
+        "Assigns `haiku` to the log scan and sets no effort for it, because Haiku 4.5 has no effort level",
+        "Assigns `sonnet` or `opus` at `high` effort to the multi-source verification that becomes a spec",
+        "Does not default the verification task to `max`: it picks `high`, and mentions `max` (if at all) only for when the owner asks or a wrong answer is expensive",
+        "Assigns `opus` at `high` to `max` effort to the prize-calculation correctness review",
+        "Says that how a per-call effort ranks against settings `modelSettings` is undocumented and suggests checking the subagent's effort in `/tasks`"
+      ]
+    },
+    {
+      "id": 4,
+      "prompt": "Claude Code của mình là bản 2.1.285, cài bằng Homebrew cask claude-code. Mình muốn một subagent nghiên cứu chạy effort max, còn các subagent khác giữ effort thấp. Làm thế nào?",
+      "expected_output": "Explains that 2.1.285 has no per-call `effort` on the Agent tool (added in 2.1.292); offers a custom agent in `.claude/agents/` whose frontmatter sets `effort: max` (it overrides the session level but not `CLAUDE_CODE_EFFORT_LEVEL`), or an upgrade, noting that the cask `claude-code` follows the stable channel while `claude-code@latest` already ships 2.1.292; warns that settings `modelSettings` or `CLAUDE_CODE_EFFORT_LEVEL` would change the effort of every use of that model or session, not just one subagent.",
+      "files": [],
+      "expectations": [
+        "States that Claude Code 2.1.285 has no per-call `effort` parameter on the Agent tool",
+        "Names 2.1.292 as the version that added the per-call `effort` parameter",
+        "Offers a custom agent in `.claude/agents/` whose frontmatter sets `effort: max`",
+        "Says that frontmatter `effort` does not override the `CLAUDE_CODE_EFFORT_LEVEL` environment variable",
+        "Explains that the Homebrew cask `claude-code` follows the stable channel while `claude-code@latest` already ships 2.1.292",
+        "Warns that settings `modelSettings` or `CLAUDE_CODE_EFFORT_LEVEL` change the effort of every use of that model or session, not just one subagent"
+      ]
+    }
+  ]
+}
