@@ -391,17 +391,21 @@ describe('register', () => {
     const out = await $.prompt.context({ blocks: BLOCKS, instructionFiles: [HOST_FILE] })
     expect((out.instructionFiles ?? []).some(x => x.path.endsWith('install-notice.md'))).toBe(false)
   })
-  test('a reply with a bare pronoun gets a one-time reminder on the next prompt; the full form does not', async ($, on) => {
+  test('a reply with a bare pronoun gets a one-time reminder with the next prompt (prompt.submit, every turn); the full form does not', async ($, on) => {
     world(on, { files: { ...PLUGIN_FILES, '/host/.snagon/config.json': JSON.stringify({ address: 'anh Minh' }) } })
+    on('prompt.submit', ($, e) => ({ text: e.text, context: e.context }))
     await $.session.start(SESSION)
+    const reminderIn = async (text: string) => {
+      const r = await $.prompt.submit({ text, wait: false, origin: { kind: 'composer' } } as never) as { context?: readonly string[] }
+      return (r.context ?? []).some(c => c.includes('"anh Minh" every time'))
+    }
+    expect(await reminderIn('turn 1')).toBe(false)
     await $.classic.Stop({ last_assistant_message: 'Xong rồi, anh Minh. Hoặc anh tự chạy lệnh đó.', stop_hook_active: false, session_id: 's' } as never)
-    const first = await $.prompt.context({ blocks: BLOCKS, instructionFiles: [HOST_FILE] })
-    const reminder = (first.instructionFiles ?? []).find(x => x.path.endsWith('address-reminder.md'))
-    expect(reminder?.content).toContain('"anh Minh" every time')
-    const second = await $.prompt.context({ blocks: BLOCKS, instructionFiles: [HOST_FILE] })
-    expect((second.instructionFiles ?? []).some(x => x.path.endsWith('address-reminder.md'))).toBe(false)
+    expect(await reminderIn('turn 2')).toBe(true)
+    expect(await reminderIn('turn 3')).toBe(false)
     await $.classic.Stop({ last_assistant_message: 'Xong rồi, anh Minh.', stop_hook_active: false, session_id: 's' } as never)
-    const third = await $.prompt.context({ blocks: BLOCKS, instructionFiles: [HOST_FILE] })
-    expect((third.instructionFiles ?? []).some(x => x.path.endsWith('address-reminder.md'))).toBe(false)
+    expect(await reminderIn('turn 4')).toBe(false)
+    const context = await $.prompt.context({ blocks: BLOCKS, instructionFiles: [HOST_FILE] })
+    expect((context.instructionFiles ?? []).some(x => x.path.endsWith('address-reminder.md'))).toBe(false)
   })
 })

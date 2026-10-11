@@ -204,17 +204,25 @@ export const register: Register = on => {
       if (text) added.push({ path: `${f.root}/.snagon/memory/MEMORY.md`, kind: 'memory', content: text })
       const missing = (await $.state.get(INSTALL_NOTICE)).value
       if (missing && !f.exempt) added.push({ path: `${f.root}/.snagon/install-notice.md`, kind: 'project', content: missing })
-      const slips = (await $.state.get(ADDRESS_SLIPS)).value ?? 0
-      if (slips > 0 && f.config.address && !f.exempt) {
-        added.push({ path: `${f.root}/.snagon/address-reminder.md`, kind: 'project', content: addressReminder(f.config.address, slips) })
-        await $.state.set(ADDRESS_SLIPS, 0) // once per slip: the reminder goes with the next prompt only
-      }
       if (!f.exempt) {
         const h = await latestHandoff(io, `${f.root}/.snagon/handoff`)
         if (h) added.push({ path: h.path, kind: 'memory', content: `# Handoff from an earlier session (${h.path.slice(h.path.lastIndexOf('/') + 1, -3)})\n\n${h.content}` })
       }
     } catch (err) { note($, 'memory', `memory or handoff not loaded: ${String(err)}`) }
     return added.length ? { ...below, instructionFiles: [...current, ...added] } : below
+  })
+
+  // The address reminder rides with the next prompt: prompt.context runs once per conversation, so it cannot carry it.
+  on('prompt.submit', async ($, e, next) => {
+    try {
+      const slips = (await $.state.get(ADDRESS_SLIPS)).value ?? 0
+      if (slips > 0) {
+        await $.state.set(ADDRESS_SLIPS, 0) // once per slip: the reminder goes with the next prompt only
+        const f = await facts($)
+        if (f.config.address && !f.exempt) return next({ ...e, context: [...(e.context ?? []), addressReminder(f.config.address, slips)] })
+      }
+    } catch (err) { note($, 'address', `address reminder not added: ${String(err)}`) }
+    return next(e)
   })
 
   // The memory tools: refusals go back as errors, answers as the tool result.

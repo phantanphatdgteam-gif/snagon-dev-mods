@@ -1,6 +1,6 @@
 # snagon-dev-mods
 
-Version 0.4.3. Vietnamese version: [README.vi.md](README.vi.md). Full guide: [docs/guide.md](docs/guide.md).
+Version 0.4.4. Vietnamese version: [README.vi.md](README.vi.md). Full guide: [docs/guide.md](docs/guide.md).
 
 ## What it is
 
