@@ -11,6 +11,7 @@ import { save, search, get, startDigest, importJournal, TOOL_SPECS } from './mem
 import { journalDir, journalFiles, editsAfter, withEdit, stopReason, compactEntry, compactContext, shortcutPhrase, display, TAIL_LINES, type Edit } from './journal'
 import { planHandoff, spawnHandoff, latestHandoff } from './handoff'
 import { ensureSqlite, installNotice, agentNotice } from './install'
+import { bareAddressCount, addressReminder } from './address'
 import { gateDecision, noVerifyReason, gitIntent, gitSecretReason, isProtectedConfig, configReason, PUSH_REMINDER, SPLIT_REASON, OTHER_REPO_REASON, INDIRECT_REASON } from './gate'
 import { usageNotices, statusText, subagentReminder } from './usage'
 
@@ -23,6 +24,7 @@ const CHECKED = { plugin: 'snagon-dev-mods', key: 'gateChecked' } as const
 const DENIALS = { plugin: 'snagon-dev-mods', key: 'gateDenials' } as const
 const NOTICES = { plugin: 'snagon-dev-mods', key: 'notices' } as const
 const INSTALL_NOTICE = { plugin: 'snagon-dev-mods', key: 'installNotice' } as const
+const ADDRESS_SLIPS = { plugin: 'snagon-dev-mods', key: 'addressSlips' } as const
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
 const JOURNAL_IMPORT_DAYS = 7
 
@@ -200,6 +202,11 @@ export const register: Register = on => {
       if (text) added.push({ path: `${f.root}/.snagon/memory/MEMORY.md`, kind: 'memory', content: text })
       const missing = (await $.state.get(INSTALL_NOTICE)).value
       if (missing && !f.exempt) added.push({ path: `${f.root}/.snagon/install-notice.md`, kind: 'project', content: missing })
+      const slips = (await $.state.get(ADDRESS_SLIPS)).value ?? 0
+      if (slips > 0 && f.config.address && !f.exempt) {
+        added.push({ path: `${f.root}/.snagon/address-reminder.md`, kind: 'project', content: addressReminder(f.config.address, slips) })
+        await $.state.set(ADDRESS_SLIPS, 0) // once per slip: the reminder goes with the next prompt only
+      }
       if (!f.exempt) {
         const h = await latestHandoff(io, `${f.root}/.snagon/handoff`)
         if (h) added.push({ path: h.path, kind: 'memory', content: `# Handoff from an earlier session (${h.path.slice(h.path.lastIndexOf('/') + 1, -3)})\n\n${h.content}` })
@@ -237,6 +244,10 @@ export const register: Register = on => {
     try {
       const f = await facts($)
       const phrase = shortcutPhrase(e.last_assistant_message)
+      if (f.config.address && !f.exempt) {
+        const slips = bareAddressCount(String(e.last_assistant_message ?? ''), f.config.address)
+        if (slips > 0) await $.state.set(ADDRESS_SLIPS, slips)
+      }
       if (phrase) { try { $.ui.toast(`Possible shortcut in the last reply: "${phrase}"`) } catch { /* no surface */ } }
       if (!f.exempt && !e.stop_hook_active) {
         const io = ioOf($)

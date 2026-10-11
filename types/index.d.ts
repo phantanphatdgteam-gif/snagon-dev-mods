@@ -11,6 +11,7 @@ declare module 'claude-code' {
       gateDenials: number
       notices: string[]
       installNotice: string
+      addressSlips: number
     }
   }
 }

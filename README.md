@@ -47,7 +47,7 @@ See [docs/files.md](docs/files.md) for the module behind each step and [docs/wor
 | Permission prompts ask whether a tool may run | The gate also makes the agent state the facts (files touched, rollback, your instruction) before first edits and destructive commands |
 | Nothing stops a commit that skips git hooks or carries a key | Hook-bypass flags are refused, and commits and pushes are scanned for secrets and private files |
 | Cost is shown when you ask for it | Status line, cost notices, compaction suggestion, per-turn cost log |
-| You write all the rules yourself | Ten always-on instruction files, path rules for 21 stacks, and `/snagon-setup` |
+| You write all the rules yourself | Eleven always-on instruction files, path rules for 21 stacks, and `/snagon-setup` |
 
 - Needs only Claude Code: one hooks module, no Node.js, npm, MCP server or background service. Works on macOS and Linux.
 - Memory is private and searchable: SQLite full-text search with accents ignored, a plain scan as fallback, and secrets refused.
@@ -55,7 +55,7 @@ See [docs/files.md](docs/files.md) for the module behind each step and [docs/wor
 - `/snagon-setup` removes anything the harness or your files already say, and keeps personal preferences out of git.
 - Degrades gracefully: without sqlite3 it still works, missing tools are reported with the exact install command, and every hook step fails safe.
 - Includes 64 skills, 66 agents and 43 commands for planning, TDD, review, docs, cost and learning.
-- Tested and open: 89 automated tests plus real-tool checks, MIT licence, credits to the sources.
+- Tested and open: 93 automated tests plus real-tool checks, MIT licence, credits to the sources.
 
 ## Documentation
 
@@ -109,7 +109,7 @@ In your project, type:
 /snagon-setup
 ```
 
-Only you can start it; the model cannot. It looks at the project, asks up to 4 rounds of questions, shows a draft and writes files only after you confirm. Personal preferences go to `<project>/.snagon/CLAUDE.md`, which git ignores. Project rules go to a shared `CLAUDE.md` or to `.snagon/CLAUDE.md`, as you choose. An existing file is backed up first and kept word for word. You can run it again at any time.
+Only you can start it; the model cannot. It looks at the project, asks up to 4 rounds of questions (including your name and how you want to be addressed, for example "anh Minh"; if you prefer not to give a name, "the project owner"), shows a draft and writes files only after you confirm. Personal preferences go to `<project>/.snagon/CLAUDE.md`, which git ignores. Project rules go to a shared `CLAUDE.md` or to `.snagon/CLAUDE.md`, as you choose. An existing file is backed up first and kept word for word. You can run it again at any time. When it is done, it tells you where the project stands and recommends the next step with a ready-to-type prompt; the agent keeps doing that after every task.
 
 ## Where data lives and privacy
 
@@ -153,6 +153,7 @@ Nothing is kept inside the installed plugin folder, so updates never overwrite y
 | `lessonWord` | text | `Lesson` | Word that starts a lesson line in the journal |
 | `journalDir` | folder inside the project, relative, no `.` or `..` | `.snagon/journal` | Where journal files go |
 | `autoInstall` | `true` or `false` | `true` | Let the mod try to install sqlite3 |
+| `address` | text, for example `anh Minh` | empty | How the agent addresses you; a reply that uses the bare pronoun gets a reminder on the next prompt |
 
 ## Cost notes
 

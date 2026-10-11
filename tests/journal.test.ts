@@ -117,9 +117,9 @@ describe('usage', () => {
 
 describe('session', () => {
   test('local config falls back to English defaults', () => {
-    const def = { language: 'en', decisionWord: 'Decision', lessonWord: 'Lesson', journalDir: '.snagon/journal', autoInstall: true }
+    const def = { language: 'en', decisionWord: 'Decision', lessonWord: 'Lesson', journalDir: '.snagon/journal', autoInstall: true, address: '' }
     expect(parseConfig(undefined)).toEqual(def)
-    expect(parseConfig('{"language":"vi","decisionWord":"Quyết định","lessonWord":"Bài học","journalDir":"notes/journal/"}')).toEqual({ language: 'vi', decisionWord: 'Quyết định', lessonWord: 'Bài học', journalDir: 'notes/journal', autoInstall: true })
+    expect(parseConfig('{"language":"vi","decisionWord":"Quyết định","lessonWord":"Bài học","journalDir":"notes/journal/"}')).toEqual({ language: 'vi', decisionWord: 'Quyết định', lessonWord: 'Bài học', journalDir: 'notes/journal', autoInstall: true, address: '' })
     // the project file (from /snagon-setup) overrides the user's file field by field; bad values keep the base
     const mine = parseConfig('{"language":"vi","decisionWord":"Quyết định"}')
     expect(parseConfig('{"language":"en","autoInstall":false,"lessonWord":42}', mine)).toEqual({ ...def, language: 'en', decisionWord: 'Quyết định', autoInstall: false })

@@ -25,15 +25,16 @@ snagon-dev-mods/
 │   ├── instructions.ts        loads always-on instructions and path rules
 │   ├── rules.ts               helpers for instruction files
 │   ├── install.ts             sqlite3 check and installer
+│   ├── address.ts             counts bare-pronoun replies for the address reminder
 │   └── vendor/                shell parsing from everything-claude-code (MIT)
 ├── types/index.d.ts           session state contract
 ├── instructions/
-│   ├── always/common/         ten always-on instruction files
+│   ├── always/common/         eleven always-on instruction files
 │   └── paths/<language>/      path rules for 21 stacks
 ├── skills/                    64 skills, including snagon-setup
 ├── agents/                    66 agents
 ├── commands/                  43 commands
-├── tests/                     89 tests and two developer checks
+├── tests/                     93 tests and two developer checks
 ├── docs/                      guide.md, files.md, workflow.md, vi/
 ├── README.md, README.vi.md    overview in English and Vietnamese
 ├── CREDITS.md                 credits
@@ -85,7 +86,7 @@ Taken unchanged from everything-claude-code (MIT).
 
 | File | What it does | When it runs or is read |
 |------|--------------|-------------------------|
-| `instructions/always/common/*.md` | Ten always-on files: agents, code-review, coding-style, development-workflow, git-workflow, hooks, patterns, performance, security, testing | Added to the context on every prompt |
+| `instructions/always/common/*.md` | Eleven always-on files: agents, code-review, coding-style, development-workflow, git-workflow, guidance, hooks, patterns, performance, security, testing | Added to the context on every prompt |
 | `instructions/paths/<language>/*.md` | Path rules for 21 stacks: angular, arkts, cpp, csharp, dart, fsharp, golang, java, kotlin, nuxt, perl, php, python, react, react-native, ruby, rust, swift, typescript, vue, web. Each file has `paths:` globs | Once per session, when a matching file is read or edited |
 
 ## Skills, agents, commands
@@ -100,7 +101,7 @@ Taken unchanged from everything-claude-code (MIT).
 
 | File | What it does | When it runs or is read |
 |------|--------------|-------------------------|
-| `tests/*.test.ts` | 89 tests: gate, git intent, secrets, memory core, journal, handoff, usage, config, installer, and the whole module with a simulated Claude Code | `claude plugin test .` |
+| `tests/*.test.ts` | 93 tests: gate, git intent, secrets, memory core, journal, handoff, usage, config, installer, and the whole module with a simulated Claude Code | `claude plugin test .` |
 | `tests/sqlite.check.mjs` | Developer check with real sqlite3 | Run by hand, needs Node.js |
 | `tests/install.check.mjs` | Developer check with the real install script | Run by hand, needs Node.js |
 

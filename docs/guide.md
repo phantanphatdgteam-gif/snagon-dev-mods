@@ -44,13 +44,14 @@ Steps:
 
 1. It looks at the project first: README, build files, CI, and these files if they exist: `CLAUDE.md`, `CLAUDE.local.md`, `.claude/CLAUDE.md`, `AGENTS.md`, `.snagon/CLAUDE.md`, `~/.claude/CLAUDE.md`, `.snagon/config.json`. It also checks for sqlite3.
 2. It interviews you in up to 4 rounds, at most 4 questions each:
-   - You: reply language, how to address you, explanation level, what needs asking first.
+   - You: reply language, your name together with how to address you (for example "anh Minh"; never a bare pronoun; "Chủ dự án" or "the project owner" if you prefer not to give a name), explanation level, what needs asking first.
    - Project: purpose, commands, areas that need care, what the agent must never do.
    - Files: where project rules go, the language of the files, automatic sqlite3 install.
    - Optional: allow rules in `.claude/settings.local.json` for the read-only and test commands you confirmed.
 3. It writes a draft.
 4. It removes every line that repeats the mod's always-on rules, its harness behaviour, `~/.claude/CLAUDE.md` or existing files.
-5. It shows the result and asks you to confirm. Only then does it write.
+5. It shows the result and asks you to confirm. Only then does it write. It writes only rules you gave or confirmed; a rule it thinks is missing is asked as a question.
+6. It tells you where the project stands (setup → idea → criteria → design → plan → build → verify → ship → docs → learn) and recommends the next step: one recommended option and up to two others with their costs, plus a ready-to-type prompt.
 
 What goes where:
 
@@ -245,7 +246,7 @@ Cost: typically a few US cents per session end, and only when the journal change
 
 ## 9. Path rules
 
-Always-on instructions live in `instructions/always/common/*.md`: coding style, git workflow, testing, security, performance, patterns, hooks, code review, development workflow and agents (ten files).
+Always-on instructions live in `instructions/always/common/*.md`: coding style, git workflow, testing, security, performance, patterns, hooks, code review, development workflow, agents and guidance (eleven files). Guidance makes the agent lead you to the next step after every task and address you the way your config says.
 
 Path rules live in `instructions/paths/<language>/*.md`. A path rule loads once per session, when you read or edit a file that matches the `paths:` globs of the rule. The language folders are:
 
@@ -321,7 +322,7 @@ claude plugin test .
 claude plugin validate .
 ```
 
-`claude plugin test .` runs 89 tests. Two developer checks use the real sqlite3 and the real install script on fake `PATH` values:
+`claude plugin test .` runs 93 tests. Two developer checks use the real sqlite3 and the real install script on fake `PATH` values:
 
 ```
 node tests/sqlite.check.mjs

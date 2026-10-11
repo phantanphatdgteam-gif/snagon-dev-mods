@@ -13,12 +13,12 @@ export type Io = {
   pluginRoot: string
 }
 
-export type LocalConfig = { language: 'en' | 'vi'; decisionWord: string; lessonWord: string; journalDir: string; autoInstall: boolean }
+export type LocalConfig = { language: 'en' | 'vi'; decisionWord: string; lessonWord: string; journalDir: string; autoInstall: boolean; address: string }
 // home: the user's home folder; their own files for every project live in `~/.snagon/` (outside the installed plugin,
 // which a marketplace update replaces).
 export type SessionFacts = { root: string; exempt: boolean; config: LocalConfig; home: string }
 
-export const DEFAULT_CONFIG: LocalConfig = { language: 'en', decisionWord: 'Decision', lessonWord: 'Lesson', journalDir: '.snagon/journal', autoInstall: true }
+export const DEFAULT_CONFIG: LocalConfig = { language: 'en', decisionWord: 'Decision', lessonWord: 'Lesson', journalDir: '.snagon/journal', autoInstall: true, address: '' }
 // Environment variables that mark a session started by a loop runner or by this mod's own handoff worker.
 export const EXEMPT_VARS = ['LOOP535_ROLE', 'HANDOFF_WORKER', 'SNAGON_WORKER'] as const
 
@@ -38,6 +38,8 @@ export function parseConfig(text: string | undefined, base: LocalConfig = DEFAUL
     // a folder inside the project: relative, no "..", no leading slash
     journalDir: typeof r.journalDir === 'string' && /^[A-Za-z0-9._-][A-Za-z0-9._/-]*$/.test(r.journalDir) && !r.journalDir.split('/').some(seg => seg === '..' || seg === '.') ? r.journalDir.replace(/\/+$/, '') : base.journalDir,
     autoInstall: typeof r.autoInstall === 'boolean' ? r.autoInstall : base.autoInstall,
+    // how the user is addressed, for example "anh Minh" or "Chủ dự án" (written by /snagon-setup)
+    address: typeof r.address === 'string' && r.address.trim().length <= 60 ? r.address.trim() : base.address,
   }
 }
 

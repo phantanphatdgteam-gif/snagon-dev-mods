@@ -47,7 +47,7 @@ Xem [docs/vi/files.md](docs/vi/files.md) để biết module nào đứng sau m�
 | Hộp thoại quyền hỏi xem một công cụ có được chạy không | Cổng còn bắt agent nêu sự việc (tệp bị đụng đến, cách khôi phục, chỉ dẫn của bạn) trước các lần sửa đầu tiên và các lệnh phá hủy |
 | Không gì chặn một commit bỏ qua hook của git hoặc mang theo khóa | Cờ bỏ qua hook bị từ chối, còn commit và push được quét để tìm bí mật và tệp riêng tư |
 | Chi phí chỉ hiện khi bạn hỏi | Thanh trạng thái, thông báo chi phí, gợi ý nén ngữ cảnh, nhật ký chi phí từng lượt |
-| Bạn tự viết mọi quy tắc | Mười tệp hướng dẫn luôn bật, quy tắc theo đường dẫn cho 21 stack, và `/snagon-setup` |
+| Bạn tự viết mọi quy tắc | Mười một tệp hướng dẫn luôn bật, quy tắc theo đường dẫn cho 21 stack, và `/snagon-setup` |
 
 - Chỉ cần Claude Code: một module hook, không Node.js, npm, máy chủ MCP hay dịch vụ chạy nền. Chạy trên macOS và Linux.
 - Bộ nhớ riêng tư và tìm kiếm được: tìm kiếm toàn văn SQLite bỏ qua dấu, quét thường làm phương án dự phòng, và từ chối bí mật.
@@ -55,7 +55,7 @@ Xem [docs/vi/files.md](docs/vi/files.md) để biết module nào đứng sau m�
 - `/snagon-setup` loại bỏ mọi điều harness hoặc tệp của bạn đã nói, và giữ sở thích cá nhân ngoài git.
 - Suy giảm êm: thiếu sqlite3 vẫn chạy, công cụ còn thiếu được báo kèm lệnh cài chính xác, và mọi bước hook đều thất bại một cách an toàn.
 - Gồm 64 skill, 66 agent và 43 lệnh cho lập kế hoạch, TDD, rà soát, tài liệu, chi phí và học hỏi.
-- Đã kiểm thử và mở: 89 test tự động cùng các bước kiểm tra với công cụ thật, giấy phép MIT, ghi công các nguồn.
+- Đã kiểm thử và mở: 93 test tự động cùng các bước kiểm tra với công cụ thật, giấy phép MIT, ghi công các nguồn.
 
 ## Tài liệu
 
@@ -109,7 +109,7 @@ Trong dự án của bạn, gõ:
 /snagon-setup
 ```
 
-Chỉ bạn mới chạy được nó; mô hình không tự chạy. Skill xem qua dự án, hỏi tối đa 4 vòng câu hỏi, đưa ra bản nháp và chỉ ghi tệp sau khi bạn xác nhận. Sở thích cá nhân được ghi vào `<project>/.snagon/CLAUDE.md`, git bỏ qua tệp này. Quy tắc của dự án được ghi vào `CLAUDE.md` dùng chung hoặc vào `.snagon/CLAUDE.md`, tùy bạn chọn. Tệp có sẵn được sao lưu trước và giữ nguyên từng chữ. Bạn có thể chạy lại bất cứ lúc nào.
+Chỉ bạn mới chạy được nó; mô hình không tự chạy. Skill xem qua dự án, hỏi tối đa 4 vòng câu hỏi (có hỏi tên và cách xưng hô, ví dụ "anh Minh"; không muốn nêu tên thì gọi là "Chủ dự án"), đưa ra bản nháp và chỉ ghi tệp sau khi bạn xác nhận. Sở thích cá nhân được ghi vào `<project>/.snagon/CLAUDE.md`, git bỏ qua tệp này. Quy tắc của dự án được ghi vào `CLAUDE.md` dùng chung hoặc vào `.snagon/CLAUDE.md`, tùy bạn chọn. Tệp có sẵn được sao lưu trước và giữ nguyên từng chữ. Bạn có thể chạy lại bất cứ lúc nào.
 
 ## Dữ liệu nằm ở đâu và quyền riêng tư
 
@@ -153,6 +153,7 @@ Không có gì được lưu trong thư mục plugin đã cài, nên cập nhậ
 | `lessonWord` | văn bản | `Lesson` | Từ mở đầu dòng bài học trong nhật ký |
 | `journalDir` | thư mục trong dự án, đường dẫn tương đối, không chứa `.` hay `..` | `.snagon/journal` | Nơi đặt tệp nhật ký |
 | `autoInstall` | `true` hoặc `false` | `true` | Cho phép mod thử cài sqlite3 |
+| `address` | chữ, ví dụ `anh Minh` | trống | Cách agent gọi bạn; câu trả lời gọi trống không sẽ được nhắc ở lượt sau |
 
 ## Lưu ý về chi phí
 

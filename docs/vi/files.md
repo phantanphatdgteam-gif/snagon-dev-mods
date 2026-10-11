@@ -25,15 +25,16 @@ snagon-dev-mods/
 │   ├── instructions.ts        loads always-on instructions and path rules
 │   ├── rules.ts               helpers for instruction files
 │   ├── install.ts             sqlite3 check and installer
+│   ├── address.ts             counts bare-pronoun replies for the address reminder
 │   └── vendor/                shell parsing from everything-claude-code (MIT)
 ├── types/index.d.ts           session state contract
 ├── instructions/
-│   ├── always/common/         ten always-on instruction files
+│   ├── always/common/         eleven always-on instruction files
 │   └── paths/<language>/      path rules for 21 stacks
 ├── skills/                    64 skills, including snagon-setup
 ├── agents/                    66 agents
 ├── commands/                  43 commands
-├── tests/                     89 tests and two developer checks
+├── tests/                     93 tests and two developer checks
 ├── docs/                      guide.md, files.md, workflow.md, vi/
 ├── README.md, README.vi.md    overview in English and Vietnamese
 ├── CREDITS.md                 credits
@@ -85,7 +86,7 @@ Lấy nguyên vẹn từ everything-claude-code (MIT).
 
 | Tệp | Làm gì | Chạy hoặc được đọc khi nào |
 |------|--------------|-------------------------|
-| `instructions/always/common/*.md` | Mười tệp luôn bật: agents, code-review, coding-style, development-workflow, git-workflow, hooks, patterns, performance, security, testing | Thêm vào ngữ cảnh ở mỗi prompt |
+| `instructions/always/common/*.md` | Mười một tệp luôn bật: agents, code-review, coding-style, development-workflow, git-workflow, guidance, hooks, patterns, performance, security, testing | Thêm vào ngữ cảnh ở mỗi prompt |
 | `instructions/paths/<language>/*.md` | Quy tắc theo đường dẫn cho 21 stack: angular, arkts, cpp, csharp, dart, fsharp, golang, java, kotlin, nuxt, perl, php, python, react, react-native, ruby, rust, swift, typescript, vue, web. Mỗi tệp có các glob `paths:` | Một lần mỗi phiên, khi một tệp khớp được đọc hoặc sửa |
 
 ## Skill, agent, lệnh
@@ -100,7 +101,7 @@ Lấy nguyên vẹn từ everything-claude-code (MIT).
 
 | Tệp | Làm gì | Chạy hoặc được đọc khi nào |
 |------|--------------|-------------------------|
-| `tests/*.test.ts` | 89 test: cổng, ý định git, bí mật, lõi bộ nhớ, nhật ký, bàn giao, chi phí, cấu hình, trình cài đặt, và cả module với một Claude Code giả lập | `claude plugin test .` |
+| `tests/*.test.ts` | 93 test: cổng, ý định git, bí mật, lõi bộ nhớ, nhật ký, bàn giao, chi phí, cấu hình, trình cài đặt, và cả module với một Claude Code giả lập | `claude plugin test .` |
 | `tests/sqlite.check.mjs` | Bước kiểm tra cho lập trình viên với sqlite3 thật | Chạy thủ công, cần Node.js |
 | `tests/install.check.mjs` | Bước kiểm tra cho lập trình viên với script cài đặt thật | Chạy thủ công, cần Node.js |
 
