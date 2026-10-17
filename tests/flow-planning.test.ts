@@ -181,6 +181,14 @@ describe('flow-planning: P1, the planner ticket', () => {
     expect(latest(w)?.tickets.map(t => t.id)).toEqual(['T-1', 'T-2'])
   })
 
+  test('D12: a ticket id never comes round again: ids count on past the tickets a seal dropped', async () => {
+    const w = await atP1()
+    editRecord(w, r => ({ ...r, tickets: [], ticketSeq: 4 })) // as after a seal dropped T-2..T-4 of a finished feature
+    await run(w, 'flow-plan add a sum function')
+    expect(latest(w)?.tickets.map(t => t.id)).toEqual(['T-5'])
+    expect(latest(w)?.ticketSeq).toBe(5)
+  })
+
   test('S13-3: a cap /flow-retry cost raised before P3 is kept at P3; the echo shows that figure', async () => {
     const w = await atP1()
     const r = latest(w)

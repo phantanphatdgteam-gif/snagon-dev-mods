@@ -20,7 +20,13 @@ export type Issue = { role: keyof Routing['agents']; f: string; kind?: TicketKin
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 const settled = (out: UpdateResult): FlowRecord => { dropView(); if (!out.ok) throw new Error(`flow: the record could not be written (${out.reason})`); return out.record }
-const nextId = (r: FlowRecord): string => `T-${Math.max(0, ...r.tickets.map(t => Number(/^T-(\d+)$/.exec(t.id)?.[1] ?? 0))) + 1}`
+/** The next ticket number: one past the highest ever issued (`ticketSeq`), so an id never comes round again after a
+ * seal dropped a feature's tickets (dry run 16, D12: the next feature's RED got the sealed feature's "T-2", every session
+ * map keyed by ticket id took it for the old run, and main refused "a closed ticket"). Older records count their tickets. */
+const numberOf = (id: string): number => Number(/^T-(\d+)$/.exec(id)?.[1] ?? 0)
+const nextSeq = (r: FlowRecord, s: FlowSession): number =>
+  // a flow sealed by the older code holds no `ticketSeq`: the ids its session still remembers count too (D12-1)
+  Math.max(r.ticketSeq ?? 0, ...r.tickets.map(t => numberOf(t.id)), ...Object.keys(s.runs).map(numberOf), ...Object.keys(s.started).map(numberOf)) + 1
 
 /** Issues a ticket built with a fresh nonce (`also` changes the record in the same write); null when it is over the cap. */
 export async function issueTicket(h: FlowHost, r: FlowRecord, i: Issue): Promise<string | null> {
@@ -28,10 +34,12 @@ export async function issueTicket(h: FlowHost, r: FlowRecord, i: Issue): Promise
   if (text === null) return null
   const sha = await sha256(text), tree = await flowTree(h.io, await gitPaths(h.io, r.root), 'worktree', newNonce())
   let id = ''
+  const known = (await session(h)).value
   settled(await updateRecord(h.io, h.home, r.flowId, h.sessionId, x => {
-    id = nextId(x)
+    const seq = nextSeq(x, known)
+    id = `T-${seq}`
     const t = { id, f: i.f, sha, nonce, tree, routedType: routedAgent(i.role, i.typescriptShare ?? 0), model: ROUTING.agents[i.role].model, used: false, ...(i.kind ? { kind: i.kind } : {}) }
-    return (i.also ?? (y => y))({ ...x, tickets: [...x.tickets, t] })
+    return (i.also ?? (y => y))({ ...x, ticketSeq: seq, tickets: [...x.tickets, t] })
   }))
   await mutateSession(h, s => ({ ...s, tickets: { ...s.tickets, [id]: text } }))
   return id

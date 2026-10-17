@@ -44,6 +44,9 @@ export type FlowRecord = {
   awaiting?: string
   /** The flow USD cap frozen at P3, and what the flow's turns have spent so far. */
   flowCap?: number; spent?: number
+  /** The number of the last ticket issued in this flow: ids count on past the tickets a seal dropped, so one never comes
+   * round again (dry run 16, D12). Absent in older records, which count the tickets they hold. */
+  ticketSeq?: number
   /** Spend by phase and by phase/feature, in USD (with `spent`, the total, added at each heartbeat write). */
   spendBy?: Record<string, number>
   /** How many self-caused blocks (SELF_CAUSED) the flow had; verify.md and the release echo show it. */
@@ -81,7 +84,7 @@ const SEVERITIES = new Set(['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'])
 export const CLOSED: ReadonlySet<string> = new Set(['resolved', 'accepted-follow-up', 'dropped', 'owner-rejected', 'withdrawn', 'waived'])
 const TICKET_KEYS = new Set(['id', 'f', 'sha', 'nonce', 'tree', 'routedType', 'model', 'used', 'kind', 'toolUseId', 'agentId', 'attested'])
 const TICKET_KINDS = new Set(['review', 'delta', 'fix', 'debug', 'red', 'author'])
-const RECORD_KEYS = new Set(['version', 'flowId', 'repoKey', 'root', 'branch', 'lifecycle', 'phase', 'task', 'lock', 'approvals', 'frozen', 'counters', 'findings', 'tickets', 'seals', 'redTestHash', 'verifiedTree', 'verifyMdHash', 'releaseTree', 'feature', 'blocked', 'setup', 'features', 'judge', 'awaiting', 'flowCap', 'spent', 'round', 'fixMap', 'lastIds', 'selfBlocks', 'assumptions', 'spendBy'])
+const RECORD_KEYS = new Set(['version', 'flowId', 'repoKey', 'root', 'branch', 'lifecycle', 'phase', 'task', 'lock', 'approvals', 'frozen', 'counters', 'findings', 'tickets', 'seals', 'redTestHash', 'verifiedTree', 'verifyMdHash', 'releaseTree', 'feature', 'blocked', 'setup', 'features', 'judge', 'awaiting', 'flowCap', 'spent', 'round', 'fixMap', 'lastIds', 'selfBlocks', 'assumptions', 'spendBy', 'ticketSeq'])
 const SCOPES: readonly CapScope[] = ['plan', 'feature', 'verify']
 const MODES = new Set(['must-pass', 'no-new-failures'])
 
@@ -137,6 +140,7 @@ const CHECKS: ReadonlyArray<readonly [string, (r: Obj) => boolean]> = [
   ['judge', r => optional(r.judge, j => isObject(j) && str(j.tree) && typeof j.green === 'boolean' && str(j.task) && optional(j.f, str) && num(j.at))],
   ['awaiting', r => optional(r.awaiting, str)],
   ['cost', r => optional(r.flowCap, num) && optional(r.spent, num)],
+  ['ticketSeq', r => optional(r.ticketSeq, count)],
   ['round', r => optional(r.round, x => isObject(x) && str(x.f) && str(x.tree) && optional(x.prev, str) && strings(x.tickets))],
   ['fixMap', r => optional(r.fixMap, m => values(m, strings))],
   ['lastIds', r => optional(r.lastIds, m => values(m, count))],

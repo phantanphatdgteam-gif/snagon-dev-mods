@@ -1,9 +1,10 @@
 import { describe, expect, test } from 'claude-code/testing'
 import { flowCheck } from '../hooks/flow-check'
 import { flowStatus } from '../hooks/flow-turn'
+import { checkVerdict, noteMode } from '../hooks/flow-live'
 import { sha256 } from '../hooks/flow-review'
 import { METHOD_HEAD, ROOT } from './flow-fakes'
-import { added, agentRun, atB3, AUTHOR_TREE, diffKey, duringJudge, editRecord, ended, lastTicket, latest, NEW_FAILED, OLD, PLAN_TEXT, reportOf, run, SRC, TEST_FILE, toV1 } from './flow-drive'
+import { added, agentLaunch, agentRun, atB3, AUTHOR_TREE, diffKey, duringJudge, editRecord, ended, lastTicket, latest, NEW_FAILED, OLD, PLAN_TEXT, reportOf, run, SRC, TEST_FILE, toV1 } from './flow-drive'
 
 const BASE = 'a'.repeat(40)
 const VERIFY = `${ROOT}/docs/flow/verify.md`
@@ -109,6 +110,25 @@ describe('flow-verify: V1 to V8', () => {
     expect(w.files.get(VERIFY)).toContain('check:test: the flaky machine clock')
     expect(w.files.get(VERIFY)).toContain('- AC-001: waived')
     expect(w.files.get(VERIFY)).toContain('Blocks the agent caused: 0')
+  })
+
+  test('D12-2: a ticket issued after the seal gets an id past the sealed feature\'s, and its agent is not refused as settled', async () => {
+    const { w, d } = await toV1()
+    const num = (id: string): number => Number(/^T-(\d+)$/.exec(id)?.[1] ?? 0)
+    const used = Object.keys(w.session().value?.runs ?? {}).map(num) // F-01's runs, judged under their ids, still sit in the session
+    expect(used.length).toBeGreaterThan(0)
+    editRecord(w, ({ ticketSeq: _legacy, ...r }) => r) // a record the older code sealed: no ticketSeq, only the session remembers the ids (D12-1)
+    await run(w, 'flow-verify')
+    d.judge = { test: { exit: 1, report: reportOf([OLD, NEW_FAILED]) } }
+    await flowCheck(w.host)
+    const id = lastTicket(w)?.id ?? ''
+    expect(lastTicket(w)).toMatchObject({ f: 'verify', kind: 'debug', used: false })
+    expect(num(id)).toBeGreaterThan(Math.max(...used))
+    expect(latest(w)?.ticketSeq).toBe(num(id))
+    expect(w.session().value?.runs[id]).toBeUndefined()
+    await agentLaunch(w, id)
+    noteMode(`ag-${id}`, 'acceptEdits')
+    expect(await checkVerdict(w.host, { tool: 'Read', input: { file_path: `${ROOT}/src/add.ts` }, agentId: `ag-${id}` })).not.toContain('is settled')
   })
 
   test('a Required eval id the tests no longer prove makes the run red', async () => {
