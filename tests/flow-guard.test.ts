@@ -7,7 +7,7 @@ import type { FlowRecord, ListResult } from '../hooks/flow-state'
 
 const HOME = '/Users/u'
 const ROOT = `${HOME}/proj`
-const PLUGIN = `${HOME}/.claude/plugins/cache/m/snagon-dev-mods/0.4.4`
+const PLUGIN = `${HOME}/.claude/plugins/cache/m/snagon-dev-mods/0.5.0`
 const SETTINGS = `${ROOT}/.claude/settings.local.json`
 const PRE = '{"permissions":{}}\n'
 

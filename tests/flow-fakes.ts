@@ -8,7 +8,7 @@ import type { Layer, Settings } from '../hooks/flow-sandbox'
 
 export const HOME = '/Users/u'
 export const ROOT = `${HOME}/proj`
-export const MOD_ROOT = `${HOME}/.claude/plugins/cache/m/snagon-dev-mods/0.4.4`
+export const MOD_ROOT = `${HOME}/.claude/plugins/cache/m/snagon-dev-mods/0.5.0`
 export const SESSION_ID = 'sess-1'
 export const FLOW_ID = 'a1b2c3d4'
 export const REPO_KEY = repoKeyOf(`${ROOT}/.git`)

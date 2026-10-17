@@ -1,6 +1,6 @@
 # snagon-dev-mods
 
-Version 0.4.4. Vietnamese version: [README.vi.md](README.vi.md). Full guide: [docs/guide.md](docs/guide.md).
+Version 0.5.0. Vietnamese version: [README.vi.md](README.vi.md). Full guide: [docs/guide.md](docs/guide.md).
 
 ## What it is
 
@@ -62,6 +62,7 @@ See [docs/files.md](docs/files.md) for the module behind each step and [docs/wor
 - [docs/files.md](docs/files.md): what every file does.
 - [docs/workflow.md](docs/workflow.md): a project from idea to result, and one session from start to end.
 - [docs/guide.md](docs/guide.md): the full guide.
+- [docs/flow.md](docs/flow.md): the flow — plan, build, verify and ship under the owner's approvals (in Vietnamese).
 - [README.vi.md](README.vi.md): Vietnamese README.
 - [docs/vi/files.md](docs/vi/files.md) and [docs/vi/workflow.md](docs/vi/workflow.md): the Vietnamese versions of the two pages above.
 

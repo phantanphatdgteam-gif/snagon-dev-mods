@@ -1,6 +1,6 @@
 # snagon-dev-mods
 
-Phiên bản 0.4.4. Bản tiếng Anh: [README.md](README.md). Hướng dẫn đầy đủ (tiếng Anh): [docs/guide.md](docs/guide.md).
+Phiên bản 0.5.0. Bản tiếng Anh: [README.md](README.md). Hướng dẫn đầy đủ (tiếng Anh): [docs/guide.md](docs/guide.md).
 
 ## Đây là gì
 
@@ -62,6 +62,7 @@ Xem [docs/vi/files.md](docs/vi/files.md) để biết module nào đứng sau m�
 - [docs/files.md](docs/files.md): mỗi tệp làm gì.
 - [docs/workflow.md](docs/workflow.md): một dự án từ ý tưởng đến kết quả, và một phiên từ đầu đến cuối.
 - [docs/guide.md](docs/guide.md): hướng dẫn đầy đủ.
+- [docs/flow.md](docs/flow.md): flow — lập plan, build, verify và ship có Chủ dự án duyệt.
 - [README.vi.md](README.vi.md): README tiếng Việt.
 - [docs/vi/files.md](docs/vi/files.md) và [docs/vi/workflow.md](docs/vi/workflow.md): bản tiếng Việt của hai trang trên.
 
