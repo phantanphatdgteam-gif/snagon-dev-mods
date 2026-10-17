@@ -26,6 +26,14 @@ Any mistakes in those edits are ours, not upstream's.
 - Third-party tools named by some commands and skills (AgentShield, ccg-workflow, CodeScene, dmux, Plankton, repo-scan)
   belong to their authors and are installed separately.
 
+## agent-skills (MIT)
+
+The reference methods of the flow engine in `flow/vendor/agent-skills/` (14 skills, 3 agents and 7 references, copied
+unchanged) come from **agent-skills** by **Addy Osmani** and its contributors (https://github.com/addyosmani/agent-skills,
+commit `aeac41d4d005999432bb7312f7ff06383a91d59d`), under the MIT License (`LICENSES/agent-skills-MIT.txt`). Flow quotes
+them in its tickets as text; Claude Code does not load them as skills or agents. `flow/vendor/agent-skills.lock.json`
+lists every file with its hash, and `docs/vendor-update.md` says how they are updated.
+
 ## This mod
 
 The hooks module that runs the harness (session journal, end-of-session handoff, project memory, the safety gate

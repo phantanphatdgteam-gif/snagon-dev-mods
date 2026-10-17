@@ -14,6 +14,18 @@ import { ensureSqlite, installNotice, agentNotice } from './install'
 import { bareAddressCount, addressReminder } from './address'
 import { gateDecision, noVerifyReason, gitIntent, gitAliasReason, gitSecretReason, isProtectedConfig, configReason, PUSH_REMINDER, SPLIT_REASON, OTHER_REPO_REASON, INDIRECT_REASON } from './gate'
 import { usageNotices, statusText, subagentReminder } from './usage'
+import { checkVerdict, liveCall, noteMode, type Live } from './flow-live'
+import { collectRun, mutateSession, type FlowHost } from './flow-host'
+import type { Settings as FlowSettings } from './flow-sandbox'
+import { FLOW_COMMANDS, maskedArgs, ownerCommand } from './flow-cmd'
+import { FLOW_TOOL_SPECS, flowCard, flowStatus, flowStop } from './flow-turn'
+import { paneView } from './flow-pane'
+import { flowCheck } from './flow-check'
+import { afterAgentTurn, noteSpawned, spawnHook } from './flow-ticket'
+import { onReply } from './flow-reviewing'
+import { ECHO_PANE } from './flow-owner'
+import { addressFor, fill } from '../flow/data/templates'
+import { beat, flowUsageLine, turnEnd } from './flow-spend'
 
 type Host = CoreEngineInterface
 
@@ -25,6 +37,7 @@ const DENIALS = { plugin: 'snagon-dev-mods', key: 'gateDenials' } as const
 const NOTICES = { plugin: 'snagon-dev-mods', key: 'notices' } as const
 const INSTALL_NOTICE = { plugin: 'snagon-dev-mods', key: 'installNotice' } as const
 const ADDRESS_SLIPS = { plugin: 'snagon-dev-mods', key: 'addressSlips' } as const
+const FLOW = { plugin: 'snagon-dev-mods', key: 'flow' } as const
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
 const JOURNAL_IMPORT_DAYS = 7
 
@@ -38,6 +51,54 @@ function ioOf($: Host): Io {
     now: () => $.clock.now(),
     pluginRoot: $.plugin.root,
   }
+}
+
+type FlowEnv = Pick<FlowHost, 'sessionId' | 'claudeDir' | 'pluginDirs' | 'env'>
+let flowEnv: Promise<FlowEnv> | undefined
+let beatTimer: { cancel(): void } | undefined // F7: the flow lock's heartbeat every 60 s (a reload replaces it)
+/** The flow modules' view of `$` (flow-host.ts): what never changes in a session is read once. */
+async function hostOf($: Host): Promise<FlowHost> {
+  const f = await facts($), io = ioOf($), language = f.config.language
+  flowEnv ??= (async () => {
+    const lang = await $.env.get('LANG'), tz = await $.env.get('TZ'), xdg = await $.env.get('XDG_CONFIG_HOME'), gGlobal = await $.env.get('GIT_CONFIG_GLOBAL'), gSystem = await $.env.get('GIT_CONFIG_SYSTEM')
+    const opt = (k: string, v: string | undefined): Record<string, string> => (v ? { [k]: v } : {})
+    const env = { PATH: (await $.env.get('PATH')) ?? '', TMPDIR: (await $.env.get('TMPDIR')) ?? '', ...opt('LANG', lang), ...opt('TZ', tz), ...opt('XDG_CONFIG_HOME', xdg), ...opt('GIT_CONFIG_GLOBAL', gGlobal), ...opt('GIT_CONFIG_SYSTEM', gSystem) }
+    return { sessionId: await $.session.id(), claudeDir: (await $.env.get('CLAUDE_CONFIG_DIR')) || `${f.home}/.claude`, pluginDirs: (await $.env.get('CLAUDE_CODE_PLUGIN_DIRS')) ?? '', env }
+  })()
+    .catch(err => { flowEnv = undefined; throw err })
+  return {
+    ...(await flowEnv), io, root: f.root, home: f.home, language, address: addressFor(language, f.config.address), cwd: () => $.session.cwd(),
+    stat: async path => { try { return await $.fs.stat(path, { resolve: true }) } catch (err) { if (/ENOENT/.test(String(err))) return null; throw err } },
+    readSession: () => $.state.get(FLOW),
+    writeSession: async (value, ifVersion) => (await $.state.set(FLOW, value, { ifVersion })).isSet,
+    open: pane => $.ui.open(pane), submit: async text => { submitLater($, text) }, usd: async () => (await $.session.usage()).cost?.usd,
+    journalDir: f.config.journalDir, settings: async source => (await $.settings.read(source ? { source } : undefined)) as FlowSettings,
+    runLong: (argv, init) => collectRun($.process.spawn({ argv, ...(init.cwd ? { cwd: init.cwd } : {}) }), (ms, fn) => $.clock.after(ms, fn), init.timeoutMs),
+    journal: async line => { const day = await localNow(io); await appendText(io, `${await journalDir(io, f.root, f.config.journalDir)}/${day.date}.md`, `- ${line}\n`) },
+  }
+}
+const GUARD_FAILED = 'flow: the guard could not check this call, so it is refused'
+
+// A prompt the flow asks main to act on (S2b, the probe, a ticket, a commit) is submitted after the hook that asked
+// has answered: the engine refuses `$.prompt.submit` from inside a `command.run` hook, which holds the turn the
+// prompt would wait on (host check, 2.1.302; dry run of step 13, D1). A refusal is tried again a few times, then logged.
+const SUBMIT_RETRY_MS = [50, 300, 1000, 3000]
+function submitLater($: Host, text: string, attempt = 0): void {
+  $.clock.after(SUBMIT_RETRY_MS[attempt] ?? 3000, () => {
+    void $.prompt.submit({ text })
+      .then(r => { if (r.drop !== undefined) submitLost($, text, 'a prompt.submit hook dropped it') })
+      .catch(err => {
+        if (attempt + 1 < SUBMIT_RETRY_MS.length) submitLater($, text, attempt + 1)
+        else submitLost($, text, String(err))
+      })
+  })
+}
+/** A prompt the flow needed and could not deliver (code review of step 13, S13-2): every loss is logged, shown as a
+ * toast, and put on the next card, so the owner knows why main sits still and types /flow-status. */
+function submitLost($: Host, text: string, why: string): void {
+  try { $.ui.log(`${S}: prompt not submitted (${why}): ${text.slice(0, 80)}`) } catch { /* no surface */ }
+  try { $.ui.toast(`${S}: a flow prompt was not delivered; type /flow-status`) } catch { /* no surface */ }
+  void hostOf($).then(h => mutateSession(h, s => ({ ...s, notes: [...s.notes, fill(h.language, 'note.submitLost', { why })] }))).catch(() => undefined)
 }
 
 let cached: SessionFacts | undefined
@@ -181,9 +242,12 @@ export const register: Register = on => {
         if (forAgent) await $.state.set(INSTALL_NOTICE, forAgent)
       }
     } catch (err) { note($, 'install', `sqlite3 check failed: ${String(err)}`) }
-    for (const spec of TOOL_SPECS) {
+    for (const spec of [...TOOL_SPECS, ...FLOW_TOOL_SPECS]) {
       try { await $.tool.register(spec) } catch (err) { note($, `tool-${spec.name}`, `tool ${spec.name} not registered: ${String(err)}`) }
     }
+    for (const c of FLOW_COMMANDS) { try { await $.command.register(c) } catch (err) { note($, `cmd-${c.name}`, `/${c.name} not registered: ${String(err)}`) } }
+    beatTimer?.cancel()
+    beatTimer = $.clock.every(60_000, () => { void hostOf($).then(h => beat(h)).catch(err => note($, 'beat', `flow heartbeat not written: ${String(err)}`)) })
     return next(e)
   })
 
@@ -214,16 +278,44 @@ export const register: Register = on => {
 
   // The address reminder rides with the next prompt: prompt.context runs once per conversation, so it cannot carry it.
   on('prompt.submit', async ($, e, next) => {
+    const extra: string[] = []
     try {
       const slips = (await $.state.get(ADDRESS_SLIPS)).value ?? 0
       if (slips > 0) {
         await $.state.set(ADDRESS_SLIPS, 0) // once per slip: the reminder goes with the next prompt only
         const f = await facts($)
-        if (f.config.address && !f.exempt) return next({ ...e, context: [...(e.context ?? []), addressReminder(f.config.address, slips)] })
+        if (f.config.address && !f.exempt) extra.push(addressReminder(f.config.address, slips))
       }
     } catch (err) { note($, 'address', `address reminder not added: ${String(err)}`) }
-    return next(e)
+    // flow (plan §6): the card, after the address reminder
+    try { const c = await flowCard(await hostOf($)); if (c) extra.push(c) } catch (err) { note($, 'flow-card', `flow card not added: ${String(err)}`) }
+    return next(extra.length ? { ...e, context: [...(e.context ?? []), ...extra] } : e)
   })
+
+  // flow owner commands (plan §2.5, F37): the release code is masked before anything else, so the command line never keeps it
+  on('command.run', async ($, e, next) => {
+    if (!e.command.startsWith('flow-')) return next(e)
+    const args = maskedArgs(e.command, e.args)
+    if (args !== undefined) await next({ ...e, args })
+    return { text: (await ownerCommand(await hostOf($), e)).text }
+  }).catch(($, e, next) => (e.command.startsWith('flow-') ? { text: `flow: ${next.error.message ?? next.error.kind}` } : next(e)))
+  on('ui.render', { component: 'Pane', requestId: ECHO_PANE }, async ($, e) => {
+    const { Box, Text } = $.ui.resolve(e), view = await paneView(await hostOf($))
+    return h(Box, { flexDirection: 'column' }, ...view.lines.map(line => h(Text, null, line))) as never
+  })
+  on('tool.call', { tool: 'mcp__snagon-dev-mods__flow_status' }, async $ => answer(await flowStatus(await hostOf($))))
+    .catch(($, e, next) => ({ deny: `flow_status failed: ${next.error.message ?? next.error.kind}` }))
+  on('tool.call', { tool: 'mcp__snagon-dev-mods__flow_check' }, async $ => answer(await flowCheck(await hostOf($))))
+    .catch(($, e, next) => ({ deny: `flow_check failed: ${next.error.message ?? next.error.kind}` }))
+  // §4.6 tickets: `TICKET <id>` becomes the held text, the routed type and model; nothing may throw once the agent started
+  on('agent.spawn', async ($, e, next) => {
+    const h = await hostOf($), d = await spawnHook(h, e)
+    if (!d || 'free' in d) return next(e)
+    if ('deny' in d) return { deny: d.deny }
+    const out = await next({ ...e, prompt: d.rewrite.prompt, subagentType: d.rewrite.subagentType, model: d.rewrite.model, background: false, cwd: d.rewrite.cwd })
+    await noteSpawned(h, d.ticketId, e.tool_use_id, out.agentId).catch(err => note($, 'spawn', `ticket ${d.ticketId}: agent id not kept: ${String(err)}`))
+    return out
+  }).catch(() => ({ deny: GUARD_FAILED }))
 
   // The memory tools: refusals go back as errors, answers as the tool result.
   on('tool.call', { tool: 'mcp__snagon-dev-mods__memory_save' }, async ($, e) => answer(await save(ioOf($), (await facts($)).root, e as unknown as Record<string, unknown>)))
@@ -240,8 +332,14 @@ export const register: Register = on => {
     let reason: string | null = null
     try { reason = await guard($, call, tool) } catch (err) { note($, 'gate', `gate check failed: ${String(err)}`) }
     if (reason) return { deny: reason }
-    const out = await next(e)
+    // flow (plan §2.3, F40), fail-closed: the sandbox switch off before the call; after it, the target placed again (a
+    // change withholds the result and blocks the flow). Outside flow the call goes on as it came.
+    let live: Live
+    try { live = await liveCall(await hostOf($), call) } catch (err) { note($, 'flow', `flow check failed: ${String(err)}`); return { deny: GUARD_FAILED } }
+    const out = await next(live.e as unknown as typeof e)
     if ((out as { deny?: unknown }).deny !== undefined) return out
+    const withheld = await live.after(out).catch(() => GUARD_FAILED)
+    if (withheld) return { deny: withheld }
     let extra: string[] = []
     try { extra = await afterCall($, call, tool) } catch (err) { note($, 'after', `after-call step failed: ${String(err)}`) }
     if (!extra.length) return out
@@ -249,7 +347,16 @@ export const register: Register = on => {
     return { ...out, context: [...ctx, ...extra] } as typeof out
   })
 
+  // The permission mode each loop runs in (F26): the classic events that carry it; tool.check decides fail-closed.
+  on('classic.UserPromptSubmit', ($, e, next) => { noteMode(e.agent_id, e.permission_mode); return next(e) })
+  on('classic.PostToolUse', ($, e, next) => { noteMode(e.agent_id, e.permission_mode); return next(e) })
+  on('tool.check', async ($, e, next) => {
+    const deny = await checkVerdict(await hostOf($), e)
+    return deny ? { decision: 'deny', reason: deny } : next(e)
+  }).catch(($, e, next) => (next.called ? next(e) : { decision: 'deny', reason: GUARD_FAILED }))
+
   on('classic.Stop', async ($, e, next) => {
+    noteMode(e.agent_id, e.permission_mode)
     let reason: string | null = null
     try {
       const f = await facts($)
@@ -271,7 +378,11 @@ export const register: Register = on => {
         }
       }
     } catch (err) { note($, 'stop', `stop check failed: ${String(err)}`) }
-    return reason ? { block: reason } : next(e)
+    // flow (plan §6): one ordered block (claim, floor/junk, pressure, then this journal reminder); outside flow, as today
+    let flow: { block?: string } | null = null
+    try { flow = await flowStop(await hostOf($), { message: String(e.last_assistant_message ?? ''), stopHookActive: e.stop_hook_active === true, ...(reason ? { journal: reason } : {}) }) } catch (err) { note($, 'flow-stop', `flow stop check failed: ${String(err)}`) }
+    const block = flow ? flow.block : reason
+    return block ? { block } : next(e)
   })
 
   on('classic.PreCompact', async ($, e, next) => {
@@ -292,6 +403,7 @@ export const register: Register = on => {
   })
 
   on('classic.SessionStart', async ($, e, next) => {
+    noteMode(e.agent_id, e.permission_mode)
     const below = await next(e)
     if (e.source !== 'compact') return below
     try {
@@ -305,10 +417,20 @@ export const register: Register = on => {
   })
 
   on('turn.complete', async ($, e, next) => {
+    if (e.agentId !== undefined) {
+      // a subagent's turn end (heard since 2.1.301): on 2.1.302 the Agent tool answers only the launch of a background
+      // run, so a ticket's run is attested here, from the turn's final text (dry run of step 13, D4)
+      try {
+        const h = await hostOf($), done = await afterAgentTurn(h, e.agentId, e.answer, e.reason)
+        if (done) await onReply(h, done.t, done.text)
+      } catch (err) { note($, 'agent-turn', `ticket run not attested: ${String(err)}`) }
+      return next(e)
+    }
     try {
       const f = await facts($)
-      const usage = await $.session.usage()
-      const text = statusText(usage.cost?.usd, usage.context.percent)
+      const usage = await $.session.usage(), h = await hostOf($)
+      await turnEnd(h).catch(err => note($, 'spend', `flow spend not kept: ${String(err)}`))
+      const text = (await flowUsageLine(h)) ?? statusText(usage.cost?.usd, usage.context.percent)
       if (text) $.ui.status(`${S} ${text}`)
       const row = { ts: new Date(await $.clock.now()).toISOString(), session: await $.session.id(), usd: usage.cost?.usd ?? null, contextPercent: usage.context.percent ?? null, tokens: usage.context.tokens ?? null }
       await appendText(ioOf($), `${await dataDir(ioOf($), f.root)}/cost.jsonl`, `${JSON.stringify(row)}\n`)

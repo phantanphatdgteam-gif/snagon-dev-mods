@@ -62,17 +62,28 @@ describe('handoff', () => {
 
   test('journal lines that look like secrets never reach the handoff worker', () => {
     const plan = planHandoff(`- note\n- key ${'ghp_' + 'd'.repeat(36)}\n`, 2, 1, '', '/d', '2026-10-11', 's')
-    expect(plan?.prompt).toContain('[line removed: it looked like a secret]')
+    expect(plan?.prompt).toContain('- key [secret removed: GitHub token]')
     expect(plan?.prompt).not.toContain('ghp_')
   })
 
   test('a private-key block is removed whole, not only its first line', () => {
     const begin = '-----BEGIN OPENSSH ' + 'PRIVATE KEY-----', end = '-----END OPENSSH ' + 'PRIVATE KEY-----'
-    const plan = planHandoff(['- before', begin, 'b3BlbnNzaC1rZXktdjEAAAAA', 'QUJDREVGR0g=', end, '- after'].join('\n'), 2, 1, '', '/d', '2026-10-11', 's')
+    const plan = planHandoff(['- before', begin, 'b3BlbnNzaC1rZXktdjEAAAAA'.repeat(3), 'QUJDREVGR0g=', end, '- after'].join('\n'), 2, 1, '', '/d', '2026-10-11', 's')
     expect(plan?.prompt).toContain('- before')
     expect(plan?.prompt).toContain('- after')
     expect(plan?.prompt).not.toContain('b3BlbnNzaC1rZXktdjEAAAAA')
     expect(plan?.prompt).not.toContain('QUJDREVGR0g=')
+  })
+
+  test('a long journal whose tail starts inside a private-key block still sends none of the key', () => {
+    const begin = '-----BEGIN OPENSSH ' + 'PRIVATE KEY-----', end = '-----END OPENSSH ' + 'PRIVATE KEY-----'
+    const body = Array<string>(4000).fill('QUJDREVG'.repeat(8)) // ≈ 260k characters: the tail cut lands inside the block
+    const plan = planHandoff(['- before', begin, ...body, end, '- after'].join('\n'), 2, 1, '', '/d', '2026-10-11', 's')
+    expect(plan?.prompt).toContain('- after')
+    expect(plan?.prompt).not.toContain('QUJDREVG')
+    // the tail cut can also land inside a one-line secret: the line is removed before the cut, so no half of it is sent
+    const key = 'sk-ant-' + 'api03-' + 'Q'.repeat(30), split = `${'a'.repeat(10)} ${key}\n${'b'.repeat(MAX_JOURNAL_CHARS - 20)}`
+    expect(planHandoff(split, 2, 1, '', '/d', '2026-10-11', 's')?.prompt).not.toContain('Q'.repeat(10))
   })
 
   test('a long journal is cut to its tail', () => {

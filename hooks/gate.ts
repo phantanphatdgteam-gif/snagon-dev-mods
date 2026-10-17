@@ -108,43 +108,66 @@ export function isProtectedConfig(file: string): boolean {
 export const configReason = (file: string): string =>
   `BLOCKED: Modifying ${file.slice(file.lastIndexOf('/') + 1)} is not allowed. Fix the source code to satisfy linter/formatter rules instead of weakening the config. If this is a legitimate config change, ask the user to make it.`
 
-async function git(io: Io, root: string, args: string[]): Promise<{ ok: boolean; out: string }> {
+/** One git call for the publish checks: whether it ran, its output, and whether the output was cut at 4 MiB. */
+export type GitRead = (args: string[]) => Promise<{ ok: boolean; out: string; truncated?: boolean }>
+
+const gitOf = (io: Io, root: string): GitRead => async args => {
   try {
     const run = await io.run(['git', '-c', 'core.quotepath=off', ...args], { cwd: root, timeoutMs: 20_000 })
-    return { ok: run.exitCode === 0, out: run.stdout }
+    return { ok: run.exitCode === 0, out: run.stdout, truncated: run.isStdoutTruncated === true }
   } catch { return { ok: false, out: '' } }
 }
 
-const PUSH_SCAN_MAX = 500
+export const PUSH_SCAN_MAX = 500
+
+/** Reads git output for one scan and remembers which calls failed or were cut short (both refuse: unchecked). */
+function reader(git: GitRead): { read: (args: string[]) => Promise<string>; failed: string[] } {
+  const failed: string[] = []
+  const read = async (args: string[]): Promise<string> => {
+    const r = await git(args)
+    if (!r.ok || r.truncated) failed.push(`git ${args.slice(0, 2).join(' ')}${r.ok ? ' (output over 4 MiB)' : ''}`)
+    return r.out
+  }
+  return { read, failed }
+}
+
+/**
+ * Why publishing the commits `revs` selects (rev-list syntax) would leak a secret or a private path, or null. A merge
+ * is read against its first parent, so content that exists only in a merge commit is scanned too. With `headTree`
+ * (flow release), every path in HEAD's tree is checked as well, not only the changed ones.
+ */
+export async function publishReason(git: GitRead, revs: readonly string[], opts: { headTree?: boolean } = {}): Promise<string | null> {
+  const { read, failed } = reader(git)
+  const count = Number((await read(['rev-list', '--count', ...revs])).trim())
+  if (count > PUSH_SCAN_MAX) return `[git guard] ${count} local commits are not on any remote, more than the ${PUSH_SCAN_MAX} this guard checks, so the push is refused. Ask the user to review and push these by hand.`
+  const range = [...revs, `--max-count=${PUSH_SCAN_MAX}`]
+  // -z: names unquoted (git C-quotes odd characters); --text: a file git calls binary still shows its added lines.
+  const names = (await read(['log', '-z', '--name-only', '--format=', '--diff-filter=d', '--diff-merges=first-parent', ...range])).split('\0')
+  const diff = await read(['log', '-p', '-U0', '--text', '--no-color', '--no-ext-diff', '--no-textconv', '--diff-merges=first-parent', '--format=', ...range])
+  const tree = opts.headTree ? (await read(['ls-tree', '-r', '--name-only', '-z', 'HEAD'])).split('\0') : []
+  return verdict([...names, ...tree], diff, failed)
+}
 
 /** Why a commit or push would publish a secret or a private path, or null. */
 export async function gitSecretReason(io: Io, root: string, intent: GitIntent): Promise<string | null> {
-  const names: string[] = []
-  let diff = ''
-  const failed: string[] = []
-  const read = async (args: string[]): Promise<string> => {
-    const r = await git(io, root, args)
-    if (!r.ok) failed.push(`git ${args.slice(0, 2).join(' ')}`)
-    return r.out
-  }
+  const git = gitOf(io, root)
   if (intent.commit) {
     // A commit with -a or with paths takes working-tree changes too: check all tracked changes against HEAD
     // (before the first commit there is no HEAD, and the index is all that is tracked).
-    const wide = (intent.commitAll || intent.commitPaths) && (await git(io, root, ['rev-parse', '--verify', '--quiet', 'HEAD'])).ok
+    const { read, failed } = reader(git)
+    const wide = (intent.commitAll || intent.commitPaths) && (await git(['rev-parse', '--verify', '--quiet', 'HEAD'])).ok
     const base = wide ? ['HEAD'] : ['--cached']
-    names.push(...(await read(['diff', ...base, '--name-only', '-z', '--diff-filter=d'])).split('\0'))
-    diff += await read(['diff', ...base, '-U0', '--no-color', '--no-ext-diff'])
+    const names = (await read(['diff', ...base, '--name-only', '-z', '--diff-filter=d'])).split('\0')
+    const found = verdict(names, await read(['diff', ...base, '-U0', '--text', '--no-color', '--no-ext-diff', '--no-textconv']), failed)
+    if (found) return found
   }
-  if (intent.push) {
-    // Every local commit no remote has yet, on any branch or a detached HEAD (and tags when the push sends tags):
-    // whatever refspec the push names is among them.
-    const reach = ['HEAD', '--branches', ...(intent.pushTags ? ['--tags'] : []), ...intent.pushRefs, '--not', '--remotes']
-    const range = [...reach, `--max-count=${PUSH_SCAN_MAX}`]
-    const count = Number((await read(['rev-list', '--count', ...reach])).trim())
-    if (count > PUSH_SCAN_MAX) return `[git guard] ${count} local commits are not on any remote, more than the ${PUSH_SCAN_MAX} this guard checks, so the push is refused. Ask the user to review and push these by hand.`
-    names.push(...(await read(['log', '--name-only', '--format=', '--diff-filter=d', ...range])).split('\n'))
-    diff += await read(['log', '-p', '-U0', '--no-color', '--no-ext-diff', '--format=', ...range])
-  }
+  // Every local commit no remote has yet, on any branch or a detached HEAD (and tags when the push sends tags):
+  // whatever refspec the push names is among them.
+  if (intent.push) return publishReason(git, ['HEAD', '--branches', ...(intent.pushTags ? ['--tags'] : []), ...intent.pushRefs, '--not', '--remotes'])
+  return null
+}
+
+function verdict(names: readonly string[], diff: string, failed: readonly string[]): string | null {
   if (failed.length) return `[git guard] Could not check what this would publish (${[...new Set(failed)].join(', ')} failed), so it is refused. Check that this is a git repository and retry; if git keeps failing, tell the user.`
   const forbidden = [...new Set(names.map(n => n.trim()).filter(n => n && isForbiddenPath(n)))]
   const secrets = scanDiff(diff)

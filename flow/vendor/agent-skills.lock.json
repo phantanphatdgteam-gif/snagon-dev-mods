@@ -1,0 +1,135 @@
+{
+  "repo": "https://github.com/addyosmani/agent-skills",
+  "sha": "aeac41d4d005999432bb7312f7ff06383a91d59d",
+  "fetchedAt": "2026-10-17T12:05:47Z",
+  "files": {
+    "LICENSE": {
+      "hash": "6f202f8bd568cd730dbb2b0d1f8e243bc74c2fa1f64dbce9b2c7ea08bd5c9fd7",
+      "patched": false
+    },
+    "agents/security-auditor.md": {
+      "hash": "66a3f68f1c691b600ddb44e88afb138e239d0572df37be84e1f9a427c887dd0a",
+      "patched": false
+    },
+    "agents/test-engineer.md": {
+      "hash": "a7a0b33ec3294da8fb4ee02ed28c665056bafa48982930fe551dcfadda9117af",
+      "patched": false
+    },
+    "agents/web-performance-auditor.md": {
+      "hash": "0928b1cf8103262a364bce0c1fc689a918852e2275441f1b2e687adfa1e607e9",
+      "patched": false
+    },
+    "references/accessibility-checklist.md": {
+      "hash": "61c759d94d52296231f5f310b92b401f56c44e4430dc3cc95ebac5d7b1d5ffac",
+      "patched": false
+    },
+    "references/definition-of-done.md": {
+      "hash": "d1c75d2ae65d2c7a9cd01f93fa8de63e00e75f2fe5d08be224d576157054dcee",
+      "patched": false
+    },
+    "references/observability-checklist.md": {
+      "hash": "25fcd0e854596a5ab6f11b002050d245bf78f5ae0fcbd1df699b89451ae0e1e8",
+      "patched": false
+    },
+    "references/orchestration-patterns.md": {
+      "hash": "61e543d86f19f86b83074f8c1c769455c7085a2c72dd47b1da21a8c63785be4a",
+      "patched": false
+    },
+    "references/performance-checklist.md": {
+      "hash": "fffc38b8f3b328a973aab8b1a2efdd72b65710d8f4b57f28f8374ddae7f8a88b",
+      "patched": false
+    },
+    "references/security-checklist.md": {
+      "hash": "37774056502fe8970dcd2fd27dca5fa31f2a55232649fc3056c89c3af7d62755",
+      "patched": false
+    },
+    "references/testing-patterns.md": {
+      "hash": "f0bf05acd0edcadc27297ad5b74f104c8103ccfedba1a05cd6d6ae4af8364c56",
+      "patched": false
+    },
+    "skills/ci-cd-and-automation/SKILL.md": {
+      "hash": "a6ed8ed56456b01ff8314c44eefc69897d9905ae4e06bb2b7036286efb79b5f0",
+      "patched": false
+    },
+    "skills/code-review-and-quality/SKILL.md": {
+      "hash": "2db1e850379f255fd3091ef278cde24cd6c7d2ba23e360cc52ea522c40d4396e",
+      "patched": false
+    },
+    "skills/constraint-driven-development/SKILL.md": {
+      "hash": "06479d4305f286d23cfb99f5dc85695896785269664e1f6a8d800e3b71e70c10",
+      "patched": false
+    },
+    "skills/constraint-driven-development/references/floor-guard.md": {
+      "hash": "59715dc6c3c6c36ec9177f9ced65c379e80a4539b36115456666bfabc43a6a9c",
+      "patched": false
+    },
+    "skills/debugging-and-error-recovery/SKILL.md": {
+      "hash": "21f3960f5d7ae2cc95c40896545004dbbcbbd752ea65fc2d53962554d4174220",
+      "patched": false
+    },
+    "skills/deprecation-and-migration/SKILL.md": {
+      "hash": "6a624f942e09c69863a4219b9bd5d56975026b67b0c70bc83385ffd2120b6142",
+      "patched": false
+    },
+    "skills/idea-refine/SKILL.md": {
+      "hash": "21ef828e3a2144245b67f840cc3805f761e98c9acce9a96670b7cd7441353463",
+      "patched": false
+    },
+    "skills/idea-refine/examples.md": {
+      "hash": "563204bfbf2f80a444151695205af4cb759e722b3d1e5460e08f278a69c89ba1",
+      "patched": false
+    },
+    "skills/idea-refine/frameworks.md": {
+      "hash": "161ebc18fdf2d996bc62a87a2d747cf1bf53548354f8925de25c732c27f00309",
+      "patched": false
+    },
+    "skills/idea-refine/refinement-criteria.md": {
+      "hash": "1ca2973a4d01b5cb37ab7ddb2eff77fa4e792634a33d0ce44961c068fc88d51a",
+      "patched": false
+    },
+    "skills/idea-refine/scripts/idea-refine.sh": {
+      "hash": "f02a52408a4218047c032d221483abfbb48d11f090bb4915965c7419bf2e0e47",
+      "patched": false
+    },
+    "skills/incremental-implementation/SKILL.md": {
+      "hash": "df66536610071727feae1ca95f3c391c248ad828041750ccd3699cce763aa00b",
+      "patched": false
+    },
+    "skills/interview-me/SKILL.md": {
+      "hash": "ace4b675999bb504593d572e0f73f3d7e803ad6fddf318445598c82c11939db2",
+      "patched": false
+    },
+    "skills/observability-and-instrumentation/SKILL.md": {
+      "hash": "e7fcb0820306d46268de9594d676ad98e35040858926c412b7000faa52a61f87",
+      "patched": false
+    },
+    "skills/performance-optimization/SKILL.md": {
+      "hash": "bd36a30e55a5f84329a6977eba5e1ab7654146e71eaba88e34337d4ee020460f",
+      "patched": false
+    },
+    "skills/performance-optimization/references/optimization-patterns.md": {
+      "hash": "fbf724076ffb8ac1a28e1a2773c0b550f5361090024b2dd32e5a682c69b7945f",
+      "patched": false
+    },
+    "skills/planning-and-task-breakdown/SKILL.md": {
+      "hash": "ed0f90cc5951ddd4bcab7f871f64efec93a49af9279ef93bc470da77ad8da3f7",
+      "patched": false
+    },
+    "skills/security-and-hardening/SKILL.md": {
+      "hash": "2e3fc60eed5aba97fe416f3f3c9317fdb014a682925ec70a733c3ff99e4b9858",
+      "patched": false
+    },
+    "skills/security-and-hardening/references/hardening-patterns.md": {
+      "hash": "2e1b93a502b4cdb0258404441f3aab029b0cce4003fbbcc61af9a2de18bab9ab",
+      "patched": false
+    },
+    "skills/shipping-and-launch/SKILL.md": {
+      "hash": "726f3e546369db289160b8d42195590f00b6432887e17bf19070dcc9a347fe39",
+      "patched": false
+    },
+    "skills/source-driven-development/SKILL.md": {
+      "hash": "c59faf851377f0eeda45306398d16eb96d77ab1c2fd3e1a7fb58e9a0af33c1e9",
+      "patched": false
+    }
+  }
+}

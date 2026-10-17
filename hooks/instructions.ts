@@ -19,12 +19,19 @@ export async function markdownFiles(io: Io, dir: string): Promise<string[]> {
   return found.sort()
 }
 
-/** The always-on instruction files: the mod's, the user's own for every project (`~/.snagon/instructions`), and this
- * project's personal file `.snagon/CLAUDE.md` (written by /snagon-setup, never in git). */
+/** The flow rules (plan §10 step 11). Never a skill the model calls (the flow guard refuses `flow-*` skill names): loaded
+ * here for every conversation, after the shared rules it amends; a subagent gets main's instruction files (checked live
+ * on 2.1.302), so every agent of a ticket reads it too. Its text speaks only while a flow is active. */
+export const FLOW_LOOP = 'skills/flow-loop/SKILL.md'
+
+/** The always-on instruction files: the mod's, its flow rules, the user's own for every project (`~/.snagon/instructions`),
+ * and this project's personal file `.snagon/CLAUDE.md` (written by /snagon-setup, never in git). */
 export async function instructionFiles(io: Io, projectRoot?: string, home?: string): Promise<{ path: string; kind: 'project'; content: string }[]> {
   const personal = projectRoot ? `${projectRoot}/.snagon/CLAUDE.md` : ''
+  const flowLoop = `${io.pluginRoot}/${FLOW_LOOP}`
   const paths = [
     ...(await markdownFiles(io, `${io.pluginRoot}/instructions/always`)),
+    ...((await io.exists(flowLoop)) ? [flowLoop] : []),
     ...(home ? await markdownFiles(io, `${home}/.snagon/instructions`) : []),
     ...(personal && (await io.exists(personal)) ? [personal] : []),
   ]

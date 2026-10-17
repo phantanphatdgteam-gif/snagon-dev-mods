@@ -1,7 +1,9 @@
-// Secret patterns shared by memory saves and the git guard. Matches report the pattern's name, never the value.
+// Secret patterns shared by memory saves, the git guard and flow's redaction. Matches report the pattern's name, never the value.
 
-export const SECRET_PATTERNS: readonly { name: string; re: RegExp }[] = [
-  { name: 'private key block', re: /-----BEGIN [A-Z ]*PRIVATE KEY-----/ },
+const BEGIN_KEY = /-----BEGIN [A-Z ]*PRIVATE KEY(?: BLOCK)?-----/ // PEM, OpenSSH and PGP armor
+const END_KEY = /-----END [A-Z ]*PRIVATE KEY(?: BLOCK)?-----/
+/** Secrets that fit on one line: redactSecrets replaces each where it stands. */
+const TOKEN_PATTERNS: readonly { name: string; re: RegExp }[] = [
   { name: 'Anthropic API key', re: /\bsk-ant-[A-Za-z0-9_-]{20,}/ },
   { name: 'OpenAI-style API key', re: /\bsk-(?!ant-)(?:proj-)?[A-Za-z0-9_-]{32,}/ },
   { name: 'GitHub token', re: /\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{30,}|\bgithub_pat_[A-Za-z0-9_]{40,}/ },
@@ -10,10 +12,63 @@ export const SECRET_PATTERNS: readonly { name: string; re: RegExp }[] = [
   { name: 'Google API key', re: /\bAIza[0-9A-Za-z_-]{35}\b/ },
   { name: 'quoted password or key assignment', re: /\b(?:password|passwd|secret|api[_-]?key|access[_-]?token|auth[_-]?token)\s*[:=]\s*["'][^"'\s]{8,}["']/i },
 ]
+export const SECRET_PATTERNS: readonly { name: string; re: RegExp }[] = [{ name: 'private key block', re: BEGIN_KEY }, ...TOKEN_PATTERNS]
 
 /** Names of the secret patterns found in `text` (empty when none). */
 export function findSecrets(text: string): string[] {
   return SECRET_PATTERNS.filter(p => p.re.test(text)).map(p => p.name)
+}
+
+export const REDACTED_LINE = '[line removed: it looked like a secret]'
+const KEY_TEXT = '[secret removed: private key]'
+const TOKENS = TOKEN_PATTERNS.map(p => ({ text: `[secret removed: ${p.name}]`, re: new RegExp(p.re.source, `${p.re.flags}g`) }))
+/** Escapes a string may hold in a key: `\n`, `\r`, `\/` (PHP), `+` (.NET), also encoded twice (`\\n`). Bounded, so a
+ * run of backslashes costs linear time. */
+const ESCAPES = /\\{1,4}(?:[nr/]|u[0-9a-fA-F]{4})/g
+/** A BEGIN marker with the body and END that follow it on its line (a key held in one string), else a marker alone. */
+const KEY_INLINE = /-----BEGIN [A-Z ]*PRIVATE KEY(?: BLOCK)?-----(?:(?:\\{1,4}(?:[nr/]|u[0-9a-fA-F]{4})|[A-Za-z0-9+/=\s:,.-])*?-----END [A-Z ]*PRIVATE KEY(?: BLOCK)?-----)?|-----END [A-Z ]*PRIVATE KEY(?: BLOCK)?-----/g
+const FULL_LINE = 60 // PEM wraps key bodies at 64 characters, OpenSSH at 70, MIME base64 at 76
+
+type Kind = 'full' | 'short' | 'sum' | 'header' | null
+/** A line of a key as a file, a diff or a code string holds it: around its text may stand a diff sign, indentation, a
+ * leading `+` (Java style), a string prefix and quote, escapes, and a closing quote with `+`, `,` or `;`. full: a whole
+ * base64 line; short: a shorter one (a body's last); sum: an armor checksum (`=AbCd`); header: an armor header or a blank.
+ * The end is trimmed without a regex: two whitespace runs before `$` backtrack in cubic time on long lines. */
+function lineKind(line: string): Kind {
+  let core = line.replace(ESCAPES, '').replace(/^[+\- ]?\s*(?:\+\s*)?(?:[bru]{1,2}(?=["'`]))?["'`]?/i, '').trimEnd()
+  if (/[+,;]$/.test(core)) core = core.slice(0, -1).trimEnd()
+  if (/["'`]$/.test(core)) core = core.slice(0, -1)
+  if (core === '' || /^[A-Za-z][\w-]*: /.test(core)) return 'header'
+  if (/^=[A-Za-z0-9+/]{4}$/.test(core)) return 'sum'
+  if (!/^(?=.{4})[A-Za-z0-9+/]+={0,2}$/.test(core)) return null
+  return core.length >= FULL_LINE ? 'full' : 'short'
+}
+
+/** The lines of key bodies: below a BEGIN line (after its armor headers and blank line), full lines and then at most one
+ * shorter line; above an END line, an armor checksum, at most one shorter line and then full lines. A run counts only with
+ * a full line in it, so code beside a stray or fake marker stays; skipped header lines are never hidden. */
+function keyBody(lines: readonly string[]): Set<number> {
+  const kinds = lines.map(lineKind), body = new Set<number>()
+  const walk = (from: number, step: 1 | -1): void => {
+    const run: number[] = []
+    let i = from + step
+    if (step > 0) while (kinds[i] === 'header') i += step
+    if (step < 0 && kinds[i] === 'sum') { run.push(i); i += step }
+    if (step < 0 && kinds[i] === 'short') { run.push(i); i += step }
+    for (; kinds[i] === 'full'; i += step) run.push(i)
+    if (step > 0 && run.length && kinds[i] === 'short') run.push(i)
+    if (run.some(j => kinds[j] === 'full')) for (const j of run) body.add(j)
+  }
+  lines.forEach((line, i) => { if (BEGIN_KEY.test(line)) walk(i, 1); if (END_KEY.test(line)) walk(i, -1) })
+  return body
+}
+
+/** `text` with each one-line secret replaced where it stands (the rest of its line stays, so code beside a fake token is
+ * still shown), each private-key marker replaced, and each line of a key body replaced whole, also in a text cut inside a
+ * key. Redact before cutting text: a cut can split a secret into halves that no pattern matches. */
+export function redactSecrets(text: string): string {
+  const lines = text.split('\n'), body = keyBody(lines)
+  return lines.map((line, i) => (body.has(i) ? REDACTED_LINE : TOKENS.reduce((acc, t) => acc.replace(t.re, t.text), line.replace(KEY_INLINE, KEY_TEXT)))).join('\n')
 }
 
 // Paths that hold per-user data or credentials and never belong in a commit.

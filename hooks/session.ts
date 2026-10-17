@@ -2,13 +2,15 @@
 // only file the validator follows it through), plus facts about the session several hooks need.
 
 export type FsItem = { name: string; kind: string; size: number; mtimeMs: number }
-export type RunResult = { exitCode: number; stdout: string; stderr: string }
+// is*Truncated: the engine keeps the first 4 MiB of each stream; a check that reads output refuses past it.
+export type RunResult = { exitCode: number; stdout: string; stderr: string; isStdoutTruncated?: boolean; isStderrTruncated?: boolean }
 export type Io = {
   read(path: string): Promise<string>
   write(path: string, text: string): Promise<void>
   exists(path: string): Promise<boolean>
   list(path: string): Promise<readonly FsItem[]>
-  run(argv: string[], init?: { cwd?: string; stdin?: string; timeoutMs?: number }): Promise<RunResult>
+  // env: variables set over the host's own environment for this child only.
+  run(argv: string[], init?: { cwd?: string; stdin?: string; timeoutMs?: number; env?: Record<string, string> }): Promise<RunResult>
   now(): Promise<number>
   pluginRoot: string
 }

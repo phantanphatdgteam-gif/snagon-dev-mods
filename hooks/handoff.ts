@@ -1,7 +1,7 @@
 // The end-of-session handoff: at session end the mod lets go of one `claude -p` process that writes
 // `.snagon/handoff/<date>.md` from the journal (a session-end hook has only about 1.5 s); the next session loads it.
 import type { Io } from './session'
-import { findSecrets } from './secrets'
+import { redactSecrets } from './secrets'
 
 export const HANDOFF_PROMPT = [
   'Write the end-of-session handoff in English, concise, based ONLY on the session journal below.',
@@ -16,22 +16,12 @@ export const MAX_JOURNAL_CHARS = 200_000
 
 export type HandoffPlan = { prompt: string; promptFile: string; outFile: string; logFile: string }
 
-/** The handoff to write, or null when the journal did not change since the last handoff. */
-/** Journal text with every line that looks like a secret, and every private-key block, replaced. */
-export function redact(text: string): string {
-  let inKey = false
-  return text.split('\n').map(line => {
-    if (/-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(line)) inKey = true
-    const hide = inKey || findSecrets(line).length > 0
-    if (/-----END [A-Z ]*PRIVATE KEY-----/.test(line)) inKey = false
-    return hide ? '[line removed: it looked like a secret]' : line
-  }).join('\n')
-}
-
+/** The handoff to write, or null when the journal did not change since the last handoff. The journal is redacted whole,
+ * then cut to its tail, so a cut inside a private-key block cannot hide where the block began. */
 export function planHandoff(journalText: string, journalMtime: number, lastMtime: number, addendum: string, dir: string, date: string, sessionId: string): HandoffPlan | null {
   if (journalMtime <= lastMtime) return null
-  const tail = journalText.length > MAX_JOURNAL_CHARS ? journalText.slice(-MAX_JOURNAL_CHARS) : journalText
-  const journal = redact(tail)
+  const redacted = redactSecrets(journalText)
+  const journal = redacted.length > MAX_JOURNAL_CHARS ? redacted.slice(-MAX_JOURNAL_CHARS) : redacted
   const prompt = [HANDOFF_PROMPT, addendum.trim(), '', '<journal>', journal, '</journal>', ''].filter((p, i) => i !== 1 || p).join('\n')
   return { prompt, promptFile: `${dir}/prompt-${sessionId.replace(/[^A-Za-z0-9-]/g, '').slice(-8) || 'session'}.md`, outFile: `${dir}/${date}.md`, logFile: `${dir}/handoff.log` }
 }
