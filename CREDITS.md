@@ -37,5 +37,6 @@ lists every file with its hash, and `docs/vendor-update.md` says how they are up
 ## This mod
 
 The hooks module that runs the harness (session journal, end-of-session handoff, project memory, the safety gate
-rewritten from the vendored classifiers, path-rule loading, the sqlite3 installer) and the /snagon-setup interview were
-written for snagon-dev-mods.
+rewritten from the vendored classifiers, path-rule loading, the sqlite3 installer), the flow engine (`hooks/flow*.ts` and
+`flow/`, whose review rubrics and Definition of Done follow the agent-skills references above) and the /snagon-setup
+interview were written for snagon-dev-mods.

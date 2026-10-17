@@ -1,7 +1,7 @@
 {
   "name": "snagon-dev-mods",
   "version": "0.5.3",
-  "description": "A coding-agent harness for Claude Code as a mod that needs only Claude Code: /snagon-setup writes your project instructions without repeating the harness, a per-project memory (SQLite full-text search over JSONL, kept out of git), a fact-forcing safety gate with git hook-bypass and secret checks, session journal reminders, end-of-session handoff, cost and context notices, plus 64 skills, 66 agents and 43 commands.",
+  "description": "A coding-agent harness for Claude Code as a mod that needs only Claude Code: /snagon-setup writes your project instructions without repeating the harness, a per-project memory (SQLite full-text search over JSONL, kept out of git), a fact-forcing safety gate with git hook-bypass and secret checks, session journal reminders, end-of-session handoff, cost and context notices, a flow that takes TypeScript features from plan to release under the owner's approvals (tickets, tests first, a sandboxed judge, review, verify, ship), plus 64 skills, 66 agents and 43 commands.",
   "author": {
     "name": "snagon-dev-mods contributors",
     "url": "https://github.com/phantanphatdgteam-gif/snagon-dev-mods"

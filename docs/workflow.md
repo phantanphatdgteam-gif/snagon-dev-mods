@@ -1,6 +1,8 @@
-# Workflow: two worked examples
+# Workflow: three worked examples
 
 Back to the [README](../README.md). File reference: [files.md](files.md). Details: [guide.md](guide.md).
+
+Part A takes a project from idea to result with the bundled skills, agents and commands; it works for any language. Part B follows one session from start to end. Part C runs the flow on a TypeScript project, from setup to release, with the real numbers of one run.
 
 Names in the examples exist in the mod. Commands are typed as `/<name>` (shown as `/snagon-dev-mods:<name>` when names clash). Skills are picked by the model when relevant, or you type `/<skill-name>`. Agents are used when you ask ("use the planner agent") or when the model delegates; the full name is `snagon-dev-mods:<agent>`.
 
@@ -22,7 +24,7 @@ flowchart TD
   P5 -.->|next feature, new session| P5
 ```
 
-Between sessions the journal, the handoff and the memory digest carry the context to the next session, so you do not repeat yourself.
+Between sessions the journal, the handoff and the memory digest carry the context to the next session, so you do not repeat yourself. On a TypeScript project the flow can take phases 4 to 7 off your hands; Part C shows how.
 
 ### Phase 0: Install and setup
 
@@ -66,7 +68,7 @@ Between sessions the journal, the handoff and the memory digest carry the contex
 |---|---|
 | Goal | A step-by-step plan you have approved |
 | You type | `/plan`, then confirm |
-| The harness does | `/plan` (the `planner` agent) restates requirements, assesses risks, writes a step-by-step plan and waits for your confirmation before touching code |
+| The harness does | `/plan` restates requirements, assesses risks, writes a step-by-step plan and waits for your confirmation before touching code. It plans in the session; ask for the `planner` agent if you want a subagent to plan |
 | You get | A confirmed plan. Split the work into one feature per session |
 
 ### Phase 5: Build each feature
@@ -75,7 +77,7 @@ Between sessions the journal, the handoff and the memory digest carry the contex
 |---|---|
 | Goal | One feature built test first |
 | You type | "Use tdd-workflow to build the monthly report". When the build breaks: `/build-fix`. For a side question: `/aside ...` |
-| The harness does | `tdd-workflow` (the `tdd-guide` agent) drives test-first work. Python path rules load by themselves when `.py` files are touched. The gate asks for facts before the first edit of each file, the first Bash command and each destructive command. `/build-fix` fixes build and type errors with minimal changes. `/aside` answers without losing the task |
+| The harness does | `tdd-workflow` drives test-first work (ask for the `tdd-guide` agent to hand it to a subagent). Python path rules load by themselves when `.py` files are touched. The gate asks for facts before the first edit of each file, the first Bash command and each destructive command. `/build-fix` fixes build and type errors with minimal changes. `/aside` answers without losing the task |
 | You get | Working code with tests, and a journal entry at the end of the session |
 
 ### Phase 6: Verify
@@ -174,3 +176,64 @@ sequenceDiagram
 | 09:40 | Claude stops. The stop is held once with the journal reminder. Claude writes the journal entry (real time, files changed, a decision line, a lesson line, next step) and stops | A reminder, then the journal entry, then the final reply |
 | 09:41 | You end the session. The handoff writer starts in the background and writes `.snagon/handoff/<date>.md` about 20 seconds later. The decision and lesson lines go into memory | Nothing; the prompt returns at once |
 | Next day | The new session gets that handoff and the memory digest by itself | Claude already knows where you stopped |
+
+## Part C: One flow from setup to release
+
+The project is the one the flow evals use: a small TypeScript library with `sum` and `mean`, tested with vitest, linted with eslint, typed with tsc, on branch `main` with a remote. Its lint is already red before any change (an unused helper in `src/legacy.ts`), so the baseline step shows up. What to build is written in `docs/intent.md`:
+
+```markdown
+- F-01: a new module `src/clamp.ts` (new) exporting `clamp(x, lo, hi)` that limits `x` to the range `[lo, hi]`
+  and throws a `RangeError` when `lo > hi`; tests in `tests/clamp.test.ts` (new).
+- F-02: fix `sum` in `src/sum.ts` so it adds negative numbers too (today it drops them) ...; mark F-02 `Security: yes`.
+- F-03: add a new export `median(xs)` to the existing module `src/stats.ts` ...; tests in `tests/stats.test.ts`.
+```
+
+The times and costs below are dry run 19 (2026-10-18; main on Opus 5.5, the planner on Opus, the other agents on Sonnet). It ran 0.5.2; 0.5.3 changed only what happens when main will not start a ticket, and it sends main fewer ticket prompts.
+
+```mermaid
+sequenceDiagram
+  participant You
+  participant Main as Main session
+  participant Mod as snagon-dev-mods
+  participant Agents as Ticket agents
+  You->>Mod: /flow-setup, /flow-approve setup
+  Mod->>Main: write the sandbox block, run the probe
+  Mod->>Mod: the judge runs the baseline
+  You->>Mod: /flow-plan with the request
+  Main->>Agents: TICKET for the planner
+  Agents->>Mod: docs/flow/plan.md
+  You->>Mod: /flow-plan, /flow-approve plan
+  You->>Mod: /flow-build
+  loop each feature
+    Main->>Agents: TICKET for RED, author, reviewers, fixes
+    Mod->>Mod: the judge runs after each change
+  end
+  You->>Mod: /flow-verify, /flow-ship
+  Main->>Mod: commit of the verified work
+  You->>Mod: /flow-approve release with the code
+  Mod->>Mod: push to the remote
+```
+
+| Time | You type | What happens | What you see |
+|------|----------|--------------|--------------|
+| 02:51 | `/flow-setup` | The mod finds the stack, the `test`, `lint` and `typecheck` scripts, the npm registry the sandbox must reach, the remote and the branch | The setup in the pane, with its hash8 |
+| 02:51 | `/flow-approve setup <hash8>` | Main writes the sandbox block into `.claude/settings.local.json` (Claude Code asks; you allow it), runs the probe, and the judge runs the baseline | `lint` is red, so the flow waits for you |
+| 02:52 | `/flow-status`, then `/flow-approve baseline <hash8>` | The red `lint` is accepted as "no new failures" | `Baseline accepted. Next: /flow-plan.` |
+| 02:53 | `/flow-plan Build the three features described in docs/intent.md, in that order, exactly as that file says.` | The planner writes `docs/flow/plan.md`: six criteria (one Optional), three features, `Security: yes` on F-02 | `The planner starts now; flow_status gives main its ticket.` |
+| 02:54 | `/flow-plan`, then `/flow-approve plan <hash8>` | The plan shows in the pane with the flow cost cap, 11 USD for three features; the approval freezes both | `Plan approved: 3 features. Next: /flow-build.` |
+| 02:55 | `/flow-build` | F-01 (`clamp`): RED tests, code, judge, and a review that passed at once. F-02 (`sum`, with the security reviewer) and F-03 (`median`): each needed one fix and one second look before its seal | Nothing to type for 13 minutes |
+| 03:08 | `/flow-verify` | Every command again with every Required criterion, the junk scan, and `docs/flow/verify.md` | The flow waits for `/flow-ship` |
+| 03:09 | `/flow-ship` | Main commits the verified work | `Run /flow-ship again when it is done.` |
+| 03:10 | `/flow-ship`, then `/flow-approve release <hash8> <code>` | The release shows on one screen with its one-time code; the approval checks it all again and the mod pushes | `Released … The flow is done.` |
+
+The whole flow took 19 minutes and 9.18 USD in 26 main turns: setup 0.21, plan 0.89, F-01 1.26, F-02 2.81, F-03 2.70, verify 0.31, and about 1 for the release. Nothing blocked and nothing was waived. The script that played the owner typed 14 commands; two were repeats sent while it waited, so the table shows the twelve you need.
+
+What the project has afterwards: the new code and tests, and `docs/flow/plan.md` and `docs/flow/verify.md`, all in the release commit on the remote. The sandbox block stays in `.claude/settings.local.json`; the release commit leaves that file out. The flow record in `~/.snagon/flow/` is deleted at the end; its end marker and the views in `.snagon/flow/` stay as history.
+
+### How to get a cheap, clean flow
+
+- Write the request in a file and keep features small. Each fix with its second look costs about 1 to 1.5 USD, so a precise request is the cheapest one.
+- Say what is new. "Keep the existing tests green" is already part of done for every feature; it does not need a criterion.
+- Put your formatter in the approved lint command (for example `prettier --check`), so a pre-commit hook has nothing to rewrite at release time and you are not asked to verify again.
+- Read the card's cost line. The caps (15 USD per session, the flow cap shown with the plan) stop the flow before it overspends, and `/flow-retry cost` raises a cap once.
+- When the flow blocks, read the cause before you pick an exit: a waiver is your decision, recorded in the verify report with your reason.
