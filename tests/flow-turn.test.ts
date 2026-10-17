@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
-import { flowCard, flowStatus, flowStop } from '../hooks/flow-turn'
-import { emptySession, forgetFlowCaches } from '../hooks/flow-host'
+import { flowCard, flowStatus, flowStop, ownerSpoke, STALL_LIMIT, ticketWaiting } from '../hooks/flow-turn'
+import { activeView, emptySession, forgetFlowCaches, mutateSession } from '../hooks/flow-host'
+import { retryCommand } from '../hooks/flow-decide'
 import { forgetModes } from '../hooks/flow-live'
 import { CARD_MAX_LINES } from '../hooks/flow'
 import { versionPath, type FlowRecord } from '../hooks/flow-state'
@@ -77,6 +78,45 @@ describe('flow-turn: the card', () => {
     expect(await flowCard(vi.host)).toContain('Bước tiếp: chờ Chủ dự án. Lệnh: /flow-build')
     const broken = world({ flow: false, files: { [versionPath(HOME, 'deadbeef', 1)]: 'nope' } })
     expect(await flowCard(broken.host)).toContain('The flow state cannot be read')
+  })
+})
+
+describe('flow-turn: D13, a main that will not start its ticket', () => {
+  test('the Stop hook pushes main back to the same unstarted ticket three times, then the flow blocks stalled; /flow-retry check offers the ticket again', async () => {
+    const w = world({ record: { judge: RED, tickets: [ticket] } })
+    await mutateSession(w.host, s => ({ ...s, tickets: { ...s.tickets, 'T-1': 'TICKET T-1' } }))
+    const record = async () => { const v = await activeView(w.host); return v.mode === 'on' ? v.record : undefined }
+    expect(await ticketWaiting(w.host)).toBe(true)
+    for (let k = 1; k <= STALL_LIMIT; k++) {
+      expect((await flowStop(w.host, { message: 'I will not start it.', stopHookActive: false }))?.block).toMatch(/The current task is not passed and rounds are left: B2 F-01/)
+      expect(w.session().value?.nudges['T-1']).toBe(k)
+    }
+    // a turn inside stop_hook_active cannot push and does not count
+    expect((await flowStop(w.host, { message: 'still not', stopHookActive: true }))?.block).toBeUndefined()
+    expect(w.session().value?.nudges['T-1']).toBe(STALL_LIMIT)
+    // the fourth Stop blocks the flow instead of pushing; what else the Stop carries (a done claim on a red judge, the
+    // journal reminder) still comes, as on any Stop
+    const fourth = await flowStop(w.host, { message: 'done', stopHookActive: false, journal: 'Write the journal entry.' })
+    expect(fourth?.block).toMatch(/^1\. The last reply claims the work is done, but the judge is red/)
+    expect(fourth?.block).not.toMatch(/not passed/)
+    expect(fourth?.block).toContain('2. Write the journal entry.')
+    expect(w.session().value?.claimHeld).toBe(true)
+    expect((await record())?.blocked).toEqual({ reason: 'stalled', vars: { id: 'T-1', n: '3' } })
+    expect(await flowStatus(w.host)).toContain('/flow-retry check')
+    expect(w.session().value?.nudges['T-1']).toBe(0)
+    expect(await retryCommand(w.host, 'check')).toBe('The ticket is offered to main again.')
+    expect((await record())?.blocked).toBeUndefined()
+    expect((await flowStop(w.host, { message: 'no', stopHookActive: false }))?.block).toMatch(/not passed/)
+    expect(w.session().value?.nudges['T-1']).toBe(1)
+    // the owner's own prompt starts the count again (a main that stopped to ask the owner was not refusing)
+    await ownerSpoke(w.host)
+    expect(w.session().value?.nudges).toEqual({})
+  })
+
+  test('a ticket prompt is wanted only while an issued ticket is unstarted', async () => {
+    expect(await ticketWaiting(world({ record: { tickets: [{ ...ticket, used: true }] } }).host)).toBe(false)
+    expect(await ticketWaiting(world({ flow: false }).host)).toBe(false)
+    expect(await ticketWaiting(world({ record: { tickets: [ticket] } }).host)).toBe(false) // unused, but its text is not in this session: lost, flow_check re-issues it
   })
 })
 

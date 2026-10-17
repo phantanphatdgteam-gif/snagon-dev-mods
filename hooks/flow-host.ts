@@ -54,7 +54,7 @@ export type FlowHost = {
 }
 
 export const MOD_TOOLS: readonly string[] = ['memory_save', 'memory_search', 'memory_get', 'flow_status', 'flow_check'].map(n => `mcp__snagon-dev-mods__${n}`)
-export const emptySession = (): FlowSession => ({ pending: {}, s2b: null, tickets: {}, started: {}, startedAt: {}, ended: {}, details: {}, claimHeld: false, claim: null, shown: null, sandbox: null, notes: [], setupArgs: null, intent: null, runs: {}, disputes: {}, waive: null, release: null, spend: null, costBoost: false })
+export const emptySession = (): FlowSession => ({ pending: {}, s2b: null, tickets: {}, started: {}, startedAt: {}, ended: {}, details: {}, claimHeld: false, claim: null, shown: null, sandbox: null, notes: [], nudges: {}, setupArgs: null, intent: null, runs: {}, disputes: {}, waive: null, release: null, spend: null, costBoost: false })
 
 type Statics = { rootReal: string; caseFold: boolean; darwin: boolean; linkArgv: readonly string[]; repoKey: string | null; hasGit: boolean; protectedRoots: string[] }
 const statics = new Map<string, Promise<Statics>>()

@@ -46,6 +46,7 @@ export const BLOCKED_EXITS: Readonly<Record<string, readonly string[]>> = {
   cost: ['/flow-retry cost', '/flow-off'], redCheck: ['/flow-waive check:{cmdId} <reason>'], floor: ['/flow-waive {id} <reason>'], junk: ['/flow-waive {id} <reason>'],
   injection: ['/flow-waive {id} <reason>'], redTestChanged: ['/flow-waive {id} <reason>'], pushRejected: ['/flow-verify', '/flow-off'], reportChanged: ['/flow-verify', '/flow-off'], viewOnly: ['/flow-status'],
   awaitingOwner: ['{command}'], split: ['/flow-reject plan'], noSurface: ['{command}'], planLint: ['/flow-reject plan'], publish: ['/flow-verify', '/flow-ship', '/flow-off'],
+  stalled: ['/flow-retry check', '/flow-off'],
 }
 export function exitsFor(reason: string, vars: Readonly<Record<string, string>>): string[] {
   const exits = BLOCKED_EXITS[reason]

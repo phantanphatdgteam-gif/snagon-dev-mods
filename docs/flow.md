@@ -30,6 +30,7 @@ Flow chỉ chạy khi sandbox Bash có sẵn của Claude Code đang bật cho d
 - Chế độ quyền `bypassPermissions` cho lệnh ra khỏi sandbox mà không hỏi, nên khi flow bật ở chế độ đó chỉ được đọc; hãy đổi chế độ (shift+tab).
 - Judge chạy lệnh test/lint/build trong `sandbox-exec` của macOS với môi trường rỗng và không có mạng. Trên máy không phải macOS, judge không chạy: flow bị chặn ở lần judge đầu (`một phép kiểm không chạy được`). Plan §2.6 ghi "Linux chạy không sandbox cho tới R2"; bản hiện tại chọn chặn hẳn.
 - Sau một ticket sửa, mọi hunk thay đổi phải nằm trong FIX range mà agent báo (hoặc trong file test của tính năng). Nếu không, flow giao một ticket sửa phạm vi (một lần mỗi vòng review, không tính vòng): agent hoàn lại hunk đó hoặc báo range phủ nó. Lần sau vẫn lệch thì flow chặn và hỏi Chủ dự án miễn trừ (`/flow-waive FL-n`).
+- Nếu main không khởi động ticket được giao, hook Stop nhắc lại tối đa 3 lần; sau đó flow chặn với lý do `main không khởi động ticket T-n sau 3 lần nhắc` (không tính vòng). Mỗi lần Chủ dự án tự gõ vào, bộ đếm bắt đầu lại. Chủ dự án đọc lý do main nêu, rồi gõ `/flow-retry check` để giao lại ticket hoặc `/flow-off`.
 - Khi flow xong, file `.claude/settings.local.json` vẫn giữ khối sandbox; Chủ dự án có thể xóa nếu muốn.
 
 ## 2. Kiểm lại sau commit định dạng lại

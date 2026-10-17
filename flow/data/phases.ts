@@ -30,7 +30,7 @@ export const TASKS: readonly Task[] = [
 export const BLOCKED_REASONS: readonly string[] = [
   'cap', 'dispute', 'frozenChanged', 'cmdSrc', 'remoteChanged', 'tooSlow', 'sandboxMismatch', 'probeInconclusive', 'sandboxKey', 'tampered',
   'couldNotRun', 'cost', 'redCheck', 'floor', 'junk', 'injection', 'redTestChanged', 'pushRejected', 'viewOnly',
-  'awaitingOwner', 'split', 'noSurface', 'planLint', 'publish', 'reportChanged',
+  'awaitingOwner', 'split', 'noSurface', 'planLint', 'publish', 'reportChanged', 'stalled',
 ]
 
 /** Inputs that exist before flow starts (the repository, the owner's words, the merged settings). */

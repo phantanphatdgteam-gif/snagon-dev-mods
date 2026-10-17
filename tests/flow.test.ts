@@ -30,6 +30,7 @@ describe('flow machine: blocked reasons and their owner exits', () => {
     for (const reason of BLOCKED_REASONS) expect([reason, (BLOCKED_EXITS[reason] ?? []).length > 0]).toEqual([reason, true])
     expect(Object.keys(BLOCKED_EXITS).sort()).toEqual([...BLOCKED_REASONS].sort())
     expect(exitsFor('cost', {})).toEqual(['/flow-retry cost', '/flow-off'])
+    expect(exitsFor('stalled', { id: 'T-4', n: '3' })).toEqual(['/flow-retry check', '/flow-off'])
     expect(exitsFor('noSurface', { command: '/flow-ship' })).toEqual(['/flow-ship'])
     expect([exitsFor('floor', { id: 'FL-2' }), exitsFor('redCheck', { cmdId: 'lint' })]).toEqual([['/flow-waive FL-2 <reason>'], ['/flow-waive check:lint <reason>']])
     expect(() => exitsFor('junk', {})).toThrow()

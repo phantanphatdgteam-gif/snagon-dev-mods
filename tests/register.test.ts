@@ -425,6 +425,18 @@ describe('register', () => {
     const out = await $.prompt.context({ blocks: BLOCKS, instructionFiles: [HOST_FILE] })
     expect((out.instructionFiles ?? []).some(x => x.path.endsWith('install-notice.md'))).toBe(false)
   })
+  test('D13: the mod drops its own ticket prompt once no unstarted ticket waits for it, and leaves other prompts alone', async ($, on) => {
+    on('prompt.submit', ($, e) => ({ text: e.text, context: e.context }))
+    const ticket = { id: 'T-1', f: 'F-01', sha: 's', nonce: 'n', tree: 't', routedType: 'tdd-guide', model: 'sonnet', used: true }
+    world(on, { files: PLUGIN_FILES, flow: true, record: { tickets: [ticket] } })
+    await $.session.start(SESSION)
+    const plugin = { kind: 'plugin', name: 'snagon-dev-mods', asUser: true }
+    const ready = 'flow: a ticket is ready. Call flow_status and start the agent exactly as it says.'
+    expect(await $.prompt.submit({ text: ready, wait: false, origin: plugin } as never)).toEqual({ drop: 'flow: no unstarted ticket waits for this prompt' })
+    expect(await $.prompt.submit({ text: 'flow: the project owner decided. Call flow_check.', wait: false, origin: plugin } as never)).toMatchObject({ text: 'flow: the project owner decided. Call flow_check.' })
+    expect(await $.prompt.submit({ text: ready, wait: false, origin: { kind: 'composer' } } as never)).toMatchObject({ text: ready })
+  })
+
   test('a reply with a bare pronoun gets a one-time reminder with the next prompt (prompt.submit, every turn); the full form does not', async ($, on) => {
     world(on, { files: { ...PLUGIN_FILES, '/host/.snagon/config.json': JSON.stringify({ address: 'anh Minh' }) } })
     on('prompt.submit', ($, e) => ({ text: e.text, context: e.context }))

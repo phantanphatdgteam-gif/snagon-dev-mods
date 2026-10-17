@@ -18,12 +18,12 @@ import { checkVerdict, liveCall, noteMode, type Live } from './flow-live'
 import { collectRun, mutateSession, type FlowHost } from './flow-host'
 import type { Settings as FlowSettings } from './flow-sandbox'
 import { FLOW_COMMANDS, maskedArgs, ownerCommand } from './flow-cmd'
-import { FLOW_TOOL_SPECS, flowCard, flowStatus, flowStop } from './flow-turn'
+import { FLOW_TOOL_SPECS, flowCard, flowStatus, flowStop, ownerSpoke, TICKET_PROMPT, ticketWaiting } from './flow-turn'
 import { paneView } from './flow-pane'
 import { flowCheck } from './flow-check'
 import { afterAgentTurn, noteSpawned, spawnHook } from './flow-ticket'
 import { onReply } from './flow-reviewing'
-import { ECHO_PANE } from './flow-owner'
+import { ECHO_PANE, OWNER_ORIGINS } from './flow-owner'
 import { addressFor, fill } from '../flow/data/templates'
 import { beat, flowUsageLine, turnEnd } from './flow-spend'
 
@@ -83,13 +83,24 @@ const GUARD_FAILED = 'flow: the guard could not check this call, so it is refuse
 // has answered: the engine refuses `$.prompt.submit` from inside a `command.run` hook, which holds the turn the
 // prompt would wait on (host check, 2.1.302; dry run of step 13, D1). A refusal is tried again a few times, then logged.
 const SUBMIT_RETRY_MS = [50, 300, 1000, 3000]
+// The texts waiting to be submitted, with the time they were queued: a second copy of one is not queued (one "ticket
+// is ready" reached main twice in dry runs 18 and 19); an entry older than PENDING_MS no longer counts, so a submit that
+// never settles cannot swallow the next prompt silently (security review of D13).
+const PENDING = new Map<string, number>()
+// a plugin prompt settles only once the session is idle, after a main turn that may run minutes: the bound is a safety
+// net for a submit that never settles, not the normal end of an entry (security review of D13, round 2)
+const PENDING_MS = 10 * 60_000
+/** The drop reason of this mod's own prompt.submit hook for a ticket prompt no ticket waits for: not a lost prompt. */
+const STALE_TICKET_PROMPT = 'flow: no unstarted ticket waits for this prompt'
 function submitLater($: Host, text: string, attempt = 0): void {
+  const now = Date.now()
+  if (attempt === 0) { if (now - (PENDING.get(text) ?? -Infinity) < PENDING_MS) return; PENDING.set(text, now) }
   $.clock.after(SUBMIT_RETRY_MS[attempt] ?? 3000, () => {
     void $.prompt.submit({ text })
-      .then(r => { if (r.drop !== undefined) submitLost($, text, 'a prompt.submit hook dropped it') })
+      .then(r => { PENDING.delete(text); if (r.drop !== undefined && r.drop !== STALE_TICKET_PROMPT) submitLost($, text, 'a prompt.submit hook dropped it') })
       .catch(err => {
         if (attempt + 1 < SUBMIT_RETRY_MS.length) submitLater($, text, attempt + 1)
-        else submitLost($, text, String(err))
+        else { PENDING.delete(text); submitLost($, text, String(err)) }
       })
   })
 }
@@ -278,6 +289,15 @@ export const register: Register = on => {
 
   // The address reminder rides with the next prompt: prompt.context runs once per conversation, so it cannot carry it.
   on('prompt.submit', async ($, e, next) => {
+    // D13: this mod's own ticket prompt, when no unstarted ticket waits for it any more (main started the ticket while the
+    // prompt waited for its turn), is dropped as it enters; submitLater knows the reason as not a loss
+    if (e.origin.kind === 'plugin' && e.text.startsWith(TICKET_PROMPT)) {
+      try { if (!(await ticketWaiting(await hostOf($)))) return { drop: STALE_TICKET_PROMPT } } catch (err) { note($, 'ticket-prompt', `ticket prompt not checked: ${String(err)}`) }
+    }
+    // D13: the owner's own prompt starts the push count again: a main that stopped to ask the owner was not refusing
+    if (OWNER_ORIGINS.has(e.origin.kind)) {
+      try { await ownerSpoke(await hostOf($)) } catch (err) { note($, 'nudges', `push count not reset: ${String(err)}`) }
+    }
     const extra: string[] = []
     try {
       const slips = (await $.state.get(ADDRESS_SLIPS)).value ?? 0

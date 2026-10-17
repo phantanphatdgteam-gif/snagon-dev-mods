@@ -41,10 +41,11 @@ export async function retryCommand(h: FlowHost, scope: string): Promise<string> 
   if (view.mode !== 'on') return none(h)
   const r = view.record, b = r.blocked
   if (scope === 'check') {
-    if (b?.reason !== 'couldNotRun') return fill(h.language, 'retry.none', { scope })
+    if (b?.reason !== 'couldNotRun' && b?.reason !== 'stalled') return fill(h.language, 'retry.none', { scope })
     settled(await updateRecord(h.io, h.home, r.flowId, h.sessionId, y => withoutBlock(y, true)))
+    if (b.reason === 'stalled') await mutateSession(h, x => ({ ...x, nudges: {} })) // D13: main gets its reminders again
     await h.submit(GO_ON)
-    return fill(h.language, 'retry.check', {})
+    return fill(h.language, b.reason === 'stalled' ? 'retry.stalled' : 'retry.check', {})
   }
   if (scope === 'cost') {
     const said = await retryCost(h, r)

@@ -80,8 +80,16 @@ scenario_S9() {
   perl -0pi -e 's/(export async function liveCall\([^\n]*\{\n)/$1  throw new Error("eval S9: the guard is broken on purpose")\n/' "$f" && grep -q 'eval S9' "$f" || { verdict 'FAIL could not patch the copy'; return 1; }
   sleep 8 # the reload
   owner 'Read package.json and tell me its "name" field; one short sentence.'
-  drive wait "$SES" 60 'guard could not check this call' > /dev/null || { verdict 'FAIL no GUARD_FAILED refusal on the screen'; return 1; }
-  grep -q 'the guard could not check this call' "$HOME/.claude/projects/$(printf '%s' "$FX" | sed 's/[^A-Za-z0-9]/-/g')/$SID.jsonl" || { verdict 'FAIL the refusal is not in the transcript'; return 1; }
+  # the refusal is read from the screen or the transcript, whichever shows it first: the TUI may draw a tool error
+  # collapsed or scroll it away (2026-10-18, run 1 of 3: the transcript held the refusal, the screen read missed it)
+  tr="$HOME/.claude/projects/$(printf '%s' "$FX" | sed 's/[^A-Za-z0-9]/-/g')/$SID.jsonl"; seen=0; i=0
+  while [ $i -lt 60 ]; do
+    { drive wait "$SES" 1 'guard could not check this call' > /dev/null 2>&1 || grep -q 'the guard could not check this call' "$tr" 2>/dev/null; } && { seen=1; break; }
+    i=$((i+1))
+  done
+  [ $seen = 1 ] || { verdict 'FAIL no GUARD_FAILED refusal on the screen or in the transcript'; return 1; }
+  sleep 2
+  grep -q 'the guard could not check this call' "$tr" || { verdict 'FAIL the refusal is not in the transcript'; return 1; }
   verdict 'PASS a tool call with a throwing guard is refused (GUARD_FAILED)'
 }
 

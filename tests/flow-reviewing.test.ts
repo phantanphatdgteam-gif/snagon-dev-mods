@@ -340,6 +340,15 @@ describe('flow-reviewing: findings, the fix and the delta round', () => {
     expect(w.session().value?.tickets[lastTicket(w)?.id ?? '']).toContain('diff --git a/src/add.ts b/src/add.ts')
   })
 
+  test('D13: a ticket issued inside flow_check submits no "ticket is ready" prompt: the result names it', async () => {
+    const { w } = await atB3()
+    await agentRun(w, lastTicket(w)?.id ?? '', ended(HIGH))
+    const before = w.submitted.length // /flow-build, an owner command, did prompt for its RED ticket (main was idle)
+    await flowCheck(w.host)
+    expect(lastTicket(w)).toMatchObject({ kind: 'fix', used: false })
+    expect(w.submitted.slice(before).some(t => t.startsWith('flow: a ticket is ready'))).toBe(false)
+  })
+
   test('D11: a feature fix reply with no FIX and no DISPUTE line is not attested; the fix ticket comes again', async () => {
     const { w } = await atB3()
     await agentRun(w, lastTicket(w)?.id ?? '', ended(HIGH))

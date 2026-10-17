@@ -29,6 +29,8 @@ export type FlowSession = {
   sandbox: 'on' | 'changed' | null
   /** Owner-facing lines the next card shows once (a release approval from another origin). */
   notes: readonly string[]
+  /** D13: how many times the Stop hook pushed main back to start the same ticket, by ticket id; past the limit the flow blocks. */
+  nudges: Record<string, number>
   /** The arguments of the setup echo waiting for approval. */
   setupArgs: FlowSetupArgs | null
   /** What the owner asked /flow-plan to build (it goes into every planner ticket). */

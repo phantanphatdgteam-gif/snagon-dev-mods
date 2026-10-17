@@ -8,7 +8,7 @@ import type { CapScope, Caps } from '../flow/data/types'
 import { card, claims, costCapHit, exitsFor, stopBlock, type Cost } from './flow'
 import { flowTree, gitPaths } from './flow-git'
 import { newNonce } from './flow-review'
-import { activeView, holderOf, mutateSession, session, type FlowHost } from './flow-host'
+import { activeView, blockFlow, holderOf, mutateSession, session, type FlowHost } from './flow-host'
 import { CLOSED, lockStatus, type FlowRecord } from './flow-state'
 import { PROBE_COMMAND } from './flow-sandbox'
 import { costBlock, costOf } from './flow-spend'
@@ -89,6 +89,33 @@ async function judgeOf(h: FlowHost, r: FlowRecord, message: string): Promise<'gr
   if (!claims(message)) return 'green'
   try { return (await flowTree(h.io, await gitPaths(h.io, r.root), 'worktree', newNonce())) === j.tree ? 'green' : 'stale' } catch { return 'stale' }
 }
+/** D13: how many times the Stop hook pushes main back to start the same ticket before the flow blocks for the owner
+ * (dry run 16: main refused a ticket about 19 times, at about $0.1 a turn, and only the cost caps could have ended it). */
+export const STALL_LIMIT = 3
+/** The prompt that tells main a ticket was issued: an owner command's ticket needs it (main is idle); a ticket flow_check
+ * issues is named in flow_check's own result and gets none. */
+export const TICKET_PROMPT = 'flow: a ticket is ready'
+/** Whether an issued ticket still waits for main to start it, as whereNow sees it: unused, its text in this session. */
+export async function ticketWaiting(h: FlowHost): Promise<boolean> {
+  const view = await activeView(h), s = (await session(h)).value
+  return view.mode === 'on' && view.record.tickets.some(t => !t.used && s.tickets[t.id] !== undefined)
+}
+/** D13: the owner's own prompt starts the push count again: a main that stopped to ask the owner was not refusing. */
+export async function ownerSpoke(h: FlowHost): Promise<void> {
+  if (Object.keys((await session(h)).value.nudges).length) await mutateSession(h, s => ({ ...s, nudges: {} }))
+}
+/** D13: one more push back to the unstarted ticket `id`, or 'stalled' past the limit: the flow blocks for the owner
+ * (the ticket stays issued; /flow-retry check offers it again), and this Stop carries no pressure. */
+async function nudge(h: FlowHost, r: FlowRecord, s: FlowSession, id: string): Promise<'pushed' | 'stalled'> {
+  const n = (s.nudges[id] ?? 0) + 1
+  if (n > STALL_LIMIT) {
+    await blockFlow(h, r.flowId, { reason: 'stalled', vars: { id, n: String(STALL_LIMIT) } })
+    await mutateSession(h, x => ({ ...x, nudges: { ...x.nudges, [id]: 0 } }))
+    return 'stalled'
+  }
+  await mutateSession(h, x => ({ ...x, nudges: { ...x.nudges, [id]: n } }))
+  return 'pushed'
+}
 export type StopIn = { message: string; stopHookActive: boolean; journal?: string }
 /** §6 Stop: null outside flow (the journal reminder stands alone, as today); in flow, stopBlock's one ordered block. A
  * repeated claim goes on the card and into the journal. */
@@ -100,8 +127,12 @@ export async function flowStop(h: FlowHost, i: StopIn): Promise<{ block?: string
   const running = where.kind === 'check' || where.kind === 'ticket' || where.kind === 'main'
   const task = TASKS.find(t => t.id === r.task)
   const pressure = running && costCapHit(await costOf(h, r)) === null ? `${[r.task, r.feature].filter(Boolean).join(' ')} (${task?.title ?? r.task}); call flow_status for the next step` : undefined
+  // D13: a push back to the same unstarted ticket counts; past the limit the flow blocks for the owner and this Stop
+  // pushes no more, so a main that will not start its ticket cannot run to the cost cap; what else the Stop carries (a
+  // done claim, floor hits, the journal reminder) still goes through stopBlock as on any Stop
+  const push = where.kind === 'ticket' && pressure !== undefined && !i.stopHookActive ? await nudge(h, r, s, where.id) : 'none'
   const hits = r.findings.filter(x => /^(FL|J)-\d+$/.test(x.id) && !CLOSED.has(x.status)).map(x => x.id)
-  const out = await stopBlock({ message: i.message, judge, claimHeld: s.claimHeld, hits, stopHookActive: i.stopHookActive, ...(pressure ? { pressure } : {}), ...(i.journal ? { journal: i.journal } : {}) })
+  const out = await stopBlock({ message: i.message, judge, claimHeld: s.claimHeld, hits, stopHookActive: i.stopHookActive, ...(pressure && push !== 'stalled' ? { pressure } : {}), ...(i.journal ? { journal: i.journal } : {}) })
   const claim = judge === 'green' || judge === 'none' ? null : out.claimRepeat ? judge : s.claim
   await mutateSession(h, x => ({ ...x, claimHeld: out.claimHeld, claim }))
   if (out.claimRepeat && judge !== 'green' && judge !== 'none') await h.journal(fill(h.language, 'journal.claim', { state: fill(h.language, `judge.${judge}`, {}) }))

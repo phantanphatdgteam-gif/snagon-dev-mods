@@ -8,7 +8,7 @@ import { hashOf } from './session'
 import { TYPESCRIPT } from '../flow/data/stacks'
 import { activeView, blockFlow, dropView, mutateSession, session, type FlowHost } from './flow-host'
 import { updateRecord, type Blocked, type FlowRecord } from './flow-state'
-import { flowStatus, whereNow } from './flow-turn'
+import { flowStatus, TICKET_PROMPT, whereNow } from './flow-turn'
 import { sandboxProblems } from './flow-freeze'
 import { sourcesDrift } from './flow-run'
 import { runBaseline } from './flow-baseline'
@@ -91,16 +91,20 @@ export async function flowCheck(h: FlowHost): Promise<string> {
   // a ticket lost in a restart: closed and its round given back; the step below issues it again (H5)
   const again = (await recoverLost(h, view.record)) ? await activeView(h) : view
   if (again.mode !== 'on') return flowStatus(h)
-  const r = again.record
+  const r = again.record, q = quiet(h)
   switch (r.task) {
-    case 'S3': await runBaseline(h, r); break
-    case 'P1': await planCheck(h, r); break
-    case 'B1': await redStep(h, r); break
-    case 'B2': if (await authorStep(h, r)) await buildLoop(h, 'judge'); break
-    case 'B3': await buildLoop(h, 'judge'); break
-    case 'B4': await buildLoop(h, 'review'); break
-    case 'V1': await verifyStep(h, r); break
+    case 'S3': await runBaseline(q, r); break
+    case 'P1': await planCheck(q, r); break
+    case 'B1': await redStep(q, r); break
+    case 'B2': if (await authorStep(q, r)) await buildLoop(q, 'judge'); break
+    case 'B3': await buildLoop(q, 'judge'); break
+    case 'B4': await buildLoop(q, 'review'); break
+    case 'V1': await verifyStep(q, r); break
     default: throw new Error(`flow: flow_check for ${r.task} is not wired yet`)
   }
   return flowStatus(h)
 }
+/** flow_check is main's own call, and its result names the ticket a step issues: the "ticket is ready" prompt an owner
+ * command's ticket needs is not submitted from here, where, queued behind main's turn, it only reached main after it had
+ * started the agent (dry run 18: eleven "no new ticket" turns; review of D13). */
+const quiet = (h: FlowHost): FlowHost => ({ ...h, submit: async text => { if (!text.startsWith(TICKET_PROMPT)) await h.submit(text) } })

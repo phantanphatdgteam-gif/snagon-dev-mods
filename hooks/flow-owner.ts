@@ -70,7 +70,9 @@ export function parseOwner(command: string, args: string): OwnerCmd | { error: s
   }
 }
 
-const OWNER_ORIGINS = new Set(['composer', 'bridge'])
+/** The prompt origins that are the owner's own words: Enter at the prompt, or the bridge (never an SDK host's turn, a
+ * notification, a peer or a plugin). Owner commands and, since D13, the push-count reset use the same set. */
+export const OWNER_ORIGINS: ReadonlySet<string> = new Set(['composer', 'bridge'])
 /** Owner commands come from the owner's Enter at the prompt, or the bridge; a release approval only from the prompt. */
 export const originOk = (cmd: OwnerCmd, origin: Origin): boolean =>
   OWNER_ORIGINS.has(origin.kind) && !(cmd.name === 'flow-approve' && cmd.kind === 'release' && origin.kind !== 'composer')
