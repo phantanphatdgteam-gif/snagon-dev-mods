@@ -219,6 +219,33 @@ describe('flow review: rounds, scope and the gate', () => {
     // Old line 7 was removed: `+6,0` names the line before the gap, so the removal sits at new line 7, where a FIX of 7 points.
     expect(scopeViolations(changedHunks(files), { 'X-1': ['src/a.ts:2-4', 'src/a.ts:20-20', 'src/b.ts:7-7'] }, ['tests/a.test.ts'])).toEqual([])
     expect(scopeViolations([{ path: 'src/a.ts', start: 3, end: 6 }], { 'X-1': ['src/a.ts:5-9'] }, [])).toEqual([])
+    // a scope correction's claim (an FL id) covers a hunk only whole; a fix's claim covers it by overlap (D11-1)
+    const at3 = { 'FL-1': 'src/a.ts:3' }
+    expect(scopeViolations([{ path: 'src/a.ts', start: 3, end: 6 }], { 'FL-1': ['src/a.ts:5-9'] }, [], at3)).toEqual(['src/a.ts:3'])
+    expect(scopeViolations([{ path: 'src/a.ts', start: 3, end: 6 }], { 'FL-1': ['src/a.ts:1-6'] }, [], at3)).toEqual([])
+    // the claim covers the flagged hunk alone: another hunk inside the range, flagged or new, stays uncovered (D11-R2-2)
+    expect(scopeViolations([{ path: 'src/a.ts', start: 3, end: 6 }, { path: 'src/a.ts', start: 20, end: 22 }], { 'FL-1': ['src/a.ts:1-30'] }, [], at3)).toEqual(['src/a.ts:20'])
+    expect(scopeViolations([{ path: 'src/a.ts', start: 3, end: 6 }], { 'FL-1': ['src/a.ts:1-6'] }, [], {})).toEqual(['src/a.ts:3'])
+    expect(parseReplies('REVERT FL-2\nREVERT FL-2\nREVERT X-1').reverts).toEqual(['FL-2'])
+    // the claim is tied to the flagged line: a range elsewhere in the file is dropped at the reply (R-3)
+    const fl = { id: 'FL-1', f: 'F-01', rubricId: 'fix-scope', sev: 'HIGH', loc: 'src/a.ts:3', status: 'open' } as const
+    expect(applyFix([fl], parseReplies('FIX FL-1 | src/a.ts:40-70'), ['src/a.ts']).fixMap).toEqual({})
+    expect(applyFix([fl], parseReplies('FIX FL-1 | src/a.ts:1-6'), ['src/a.ts']).fixMap).toEqual({ 'FL-1': ['src/a.ts:1-6'] })
+    // dry run 18: the fix agent's FIX line carried the absolute path and a reason after the range (D14), the delta
+    // reviewer's verdicts a colon and a reason (D15); both as written there
+    const root = '/private/tmp/x/proj'
+    expect(parseReplies(`FIX X-1 | ${root}/src/a.ts:16-16 (\`median\` now throws a \`RangeError\` when \`xs.some(Number.isNaN)\`)`, [root]).fixes).toEqual({ 'X-1': [{ path: 'src/a.ts', start: 16, end: 16 }] })
+    expect(parseReplies('FIX X-1 | `src/a.ts:3-5`, and nothing else').fixes).toEqual({ 'X-1': [{ path: 'src/a.ts', start: 3, end: 5 }] })
+    expect(parseReplies('FIX X-1 | src/a.ts (the whole file)').fixes).toEqual({})
+    expect(parseReplies('RESOLVED CR-2: `src/stats.ts:16` now has the guard\nOPEN CR-3: the line is unchanged but has moved\nWITHDRAW CR-4: the mutation used a cast\nRESOLVED CR-22').status).toEqual({ 'CR-2': 'RESOLVED', 'CR-3': 'OPEN', 'CR-4': 'WITHDRAW', 'CR-22': 'RESOLVED' })
+    expect(parseReplies('RESOLVED CR-2x\nREVERT FL-1x').status).toEqual({})
+    expect(parseReplies('REVERT FL-3: the hunk is gone').reverts).toEqual(['FL-3'])
+    // round 3 of the D11 review: `path:n` is the line alone; the ids named by every line, range read or not; a dispute
+    // on a fix-scope finding moves nothing; a long run of punctuation in the first word is cut, not backtracked
+    expect(parseReplies('FIX X-1 | src/a.ts:16 (one line)').fixes).toEqual({ 'X-1': [{ path: 'src/a.ts', start: 16, end: 16 }] })
+    expect(parseReplies('FIX X-1 | src/a.ts (the whole file)\nDISPUTE X-2 | no\nREVERT FL-3\nFIX X-1 | src/a.ts:1-2').named).toEqual(['X-1', 'X-2', 'FL-3'])
+    expect(applyFix([fl], parseReplies('DISPUTE FL-1 | the change is needed'), ['src/a.ts']).findings[0]?.status).toBe('open')
+    expect(parseReplies(`FIX X-1 | ${')'.repeat(100_000)}x`).fixes).toEqual({})
     // A deleted file (and a removal at the top) sits at line 1, so a FIX range can cover it.
     const gone = changedHunks(parseDiff('diff --git a/src/old.ts b/src/old.ts\ndeleted file mode 100644\n--- a/src/old.ts\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-a\n-b'))
     expect(gone).toEqual([{ path: 'src/old.ts', start: 1, end: 1 }])
@@ -285,7 +312,12 @@ describe('flow review: spawn and attestation (plan §4.6)', () => {
     expect(why({ events: [{ agentId: 'ag-1', tool: 'Skill', skill: 'code-review-and-quality', ok: true }, ...run.events] })).toBe('plugin-authoring was not loaded first')
     expect(attest({ ...t, agentId: 'ag-2' }, run, { treeNow: 'tree1', pluginProject: false })).toEqual({ ok: false, reason: 'not the recorded call' })
     // Fix and debug tickets edit the tree by design; review and delta tickets (and a ticket without a kind) judge a fixed one.
-    for (const [kind, ok] of [['fix', true], ['debug', true], ['review', false], ['delta', false], [undefined, false]] as const) expect([kind, attest({ ...t, kind }, run, { treeNow: 'tree2', pluginProject: true }).ok]).toEqual([kind, ok])
+    // a feature fix must also report a FIX or DISPUTE line (D11)
+    for (const [kind, ok] of [['fix', true], ['debug', true], ['review', false], ['delta', false], [undefined, false]] as const) expect([kind, attest({ ...t, kind }, { ...run, text: kind === 'fix' ? `FIX CR-1 | src/a.ts:1-2\nREVIEW-END ${N}\n` : run.text }, { treeNow: 'tree2', pluginProject: true }).ok]).toEqual([kind, ok])
+    expect(attest({ ...t, kind: 'fix' }, run, { treeNow: 'tree2', pluginProject: true })).toEqual({ ok: false, reason: 'the fix reply names no FIX or DISPUTE line' })
+    expect(attest({ ...t, kind: 'fix', f: 'verify' }, run, { treeNow: 'tree2', pluginProject: true })).toEqual({ ok: true })
+    expect(attest({ ...t, kind: 'fix' }, { ...run, text: `REVERT FL-2\nREVIEW-END ${N}\n` }, { treeNow: 'tree2', pluginProject: true })).toEqual({ ok: true })
+    expect(attest({ ...t, kind: 'fix' }, { ...run, text: `\t FIX CR-1 | src/a.ts:1-2\nREVIEW-END ${N}\n` }, { treeNow: 'tree2', pluginProject: true })).toEqual({ ok: true })
   })
 })
 

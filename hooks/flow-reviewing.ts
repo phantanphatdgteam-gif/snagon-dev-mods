@@ -18,7 +18,7 @@ import { methodText } from './flow-method'
 import { capRound, featureNow, startFeature, type FeatureNow } from './flow-build'
 import { writeView } from './flow-setup'
 
-const START_PROMPT = 'flow: a ticket is ready. Call flow_status and start the agent exactly as it says.'
+export const START_PROMPT = 'flow: a ticket is ready. Call flow_status and start the agent exactly as it says.'
 const TS = /\.(?:[cm]?ts|tsx)$/
 const SCANNED = /^(?:FL|J)-\d+$/
 const settled = (out: UpdateResult): FlowRecord => { dropView(); if (!out.ok) throw new Error(`flow: the record could not be written (${out.reason})`); return out.record }
@@ -79,13 +79,17 @@ async function roundTickets(h: FlowHost, r: FlowRecord, fn: FeatureNow, kind: 'r
 
 /** A round: one ticket per required reviewer, one review round of the feature. A delta round reviews the change since
  * the round before. */
-async function openRound(h: FlowHost, r: FlowRecord, fn: FeatureNow, kind: 'review' | 'delta'): Promise<Blocked | null> {
+async function openRound(h: FlowHost, r: FlowRecord, fn: FeatureNow, kind: 'review' | 'delta', again = false): Promise<Blocked | null> {
   const round = capRound(r, fn.key, 'feature', fn.f.id, 'r')
   if (!round.ok) return round.blocked
-  const prev = kind === 'delta' ? r.round?.tree : undefined
+  // a delta shows the change since the last reviewed tree; the gate's re-ask (`again`: nothing open, the same tree)
+  // keeps the round's last real `prev`, so its ticket and hunks still show the fix (review, rounds 4 and 5); a delta
+  // after a fix that left the tree as it was shows no change, as before
+  const prev = kind !== 'delta' ? undefined : again ? r.round?.prev ?? r.round?.tree : r.round?.tree
   const ids = await roundTickets(h, r, fn, kind, prev, reviewers(r, fn), round.also)
   if (!Array.isArray(ids)) return ids
-  settled(await updateRecord(h.io, h.home, r.flowId, h.sessionId, y => ({ ...y, task: 'B4', round: { f: fn.f.id, tree: fn.now, ...(prev ? { prev } : {}), tickets: ids } })))
+  // a scope correction's claims (FL ids) served their round: they cover nothing in the round that opens now (D11-1, D11-4)
+  settled(await updateRecord(h.io, h.home, r.flowId, h.sessionId, y => ({ ...y, task: 'B4', round: { f: fn.f.id, tree: fn.now, ...(prev ? { prev } : {}), tickets: ids }, ...(y.fixMap ? { fixMap: Object.fromEntries(Object.entries(y.fixMap).filter(([id]) => !/^FL-\d+$/.test(id))) } : {}) })))
   await h.submit(START_PROMPT)
   return null
 }
@@ -116,8 +120,26 @@ export async function onReply(h: FlowHost, t: TicketRecord, text: string): Promi
   if (t.kind === 'author') return void (await write(x => ({ ...x, assumptions: { ...x.assumptions, [t.f]: assumptionsOf(text, t.nonce) } })))
   if (t.kind !== 'review' && t.kind !== 'delta' && t.kind !== 'fix') return void (await write(x => x))
   const r = view.record, files = r.features?.find(x => x.id === t.f)?.files ?? [], details = (await session(h)).value.details
-  const replies = parseReplies(text), prev = r.round?.prev
-  const roots = [r.root, (await h.stat(r.root))?.realPath ?? r.root] // a reviewer may spell the root either way (SEC13-5)
+  const roots = [r.root, (await h.stat(r.root))?.realPath ?? r.root] // an agent may spell the root either way (SEC13-5)
+  const replies = parseReplies(text, roots), prev = r.round?.prev
+  // a feature fix answers the findings its ticket named: at least one FIX or DISPUTE or REVERT on an open blocking finding
+  // of the feature, and a REVERT only on an open fix-scope finding; else the run is not attested and the ticket comes
+  // again (security review of D11, round 2: an invented id would earn a free correction)
+  if (t.kind === 'fix' && t.f !== 'verify') {
+    const open = r.findings.filter(x => x.f === t.f && (x.sev === 'CRITICAL' || x.sev === 'HIGH') && (x.status === 'open' || x.status === 'reopened'))
+    const named = replies.named // every FIX, DISPUTE or REVERT line's id, whether or not its range could be read
+    const bad = !named.some(id => open.some(x => x.id === id)) || replies.reverts.some(id => !open.some(x => x.id === id && x.rubricId === 'fix-scope'))
+    if (bad) return void (await mutateSession(h, s => ({ ...s, runs: { ...s.runs, [t.id]: { ok: false, reason: 'the fix names no finding of its ticket' } } })))
+  }
+  // a delta reviewer rules on every fixed or disputed blocking finding of its own prefix (the ticket asks for one line
+  // each): a reply that skips one is not attested and the round is asked again, as any review run that did not report
+  // back (dry run 18, D15: a verdict the parser dropped left a finding fixed-unconfirmed, and a fix ticket with nothing
+  // to fix went out)
+  if (t.kind === 'delta') {
+    const mine = `${prefixOf(t.routedType)}-`
+    const unruled = r.findings.filter(x => x.f === t.f && x.id.startsWith(mine) && (x.sev === 'CRITICAL' || x.sev === 'HIGH') && (x.status === 'fixed-unconfirmed' || x.status === 'disputed') && !(x.id in replies.status)).map(x => x.id)
+    if (unruled.length) return void (await mutateSession(h, s => ({ ...s, runs: { ...s.runs, [t.id]: { ok: false, reason: `the delta reply gives no verdict on ${unruled.join(', ')}` } } })))
+  }
   const hunks = t.kind === 'delta' && prev && r.round ? changedHunks(parseDiff(await diffBetween(h, await gitPaths(h.io, r.root), prev, r.round.tree))) : []
   // the findings are worked out inside the write, on the newest record: two replies at once (the code and the security
   // reviewer) both keep theirs, and the new ids follow every id already there
@@ -173,6 +195,9 @@ async function reissue(h: FlowHost, r: FlowRecord, fn: FeatureNow, round: Review
 }
 
 /** flow_check at B4. Returns 'judge' when the change a fix made must be judged before the delta round. */
+const openScanned = (r: FlowRecord, f: string): boolean => r.findings.some(x => x.f === f && SCANNED.test(x.id) && x.status === 'open' && x.sev === 'HIGH')
+/** A blocking finding of the feature the author still has to answer: the only kind a fix ticket lists. */
+const openBlocking = (r: FlowRecord, f: string): boolean => r.findings.some(x => x.f === f && (x.sev === 'CRITICAL' || x.sev === 'HIGH') && (x.status === 'open' || x.status === 'reopened'))
 export async function reviewStep(h: FlowHost, r: FlowRecord): Promise<'judge' | null> {
   const block = async (why: Blocked | null): Promise<null> => { if (why) await blockFlow(h, r.flowId, why); return null }
   const fn = await featureNow(h, r)
@@ -183,8 +208,12 @@ export async function reviewStep(h: FlowHost, r: FlowRecord): Promise<'judge' | 
   const fix = [...r.tickets].reverse().find(t => t.f === fn.f.id && t.kind === 'fix' && order(t.id) > last)
   if (fix) {
     if (!fix.used) return null
-    if (!fix.attested) return block(await fixTicket(h, r, fn))
-    if (!r.judge?.green || r.judge.tree !== fn.now) return 'judge'
+    // an unattested fix run comes again while a blocking finding is open; with none open (a correction that reverted
+    // its hunk and reported nothing) a fix ticket would list nothing, and no reply to it could be attested (review of
+    // D11, round 3): the change is judged and reviewed as it stands
+    if (!fix.attested && openBlocking(r, fn.f.id)) return block(await fixTicket(h, r, fn))
+    // judged again while a scanned HIGH finding is open: a scope correction may have reported ranges without a change
+    if (!r.judge?.green || r.judge.tree !== fn.now || openScanned(r, fn.f.id)) return 'judge'
     return block(await openRound(h, r, fn, 'delta'))
   }
   const tickets = round.tickets.map(id => r.tickets.find(t => t.id === id)).filter((t): t is TicketRecord => t !== undefined)
@@ -199,5 +228,7 @@ export async function reviewStep(h: FlowHost, r: FlowRecord): Promise<'judge' | 
   if (g.pass) { await seal(h, r, fn); return null }
   const up = upheld(mine)
   if (up.length) return block({ reason: 'dispute', vars: { id: up[0] ?? '' } })
-  return block(await fixTicket(h, r, fn))
+  // live findings with none open are fixed or disputed ones the delta round gave no verdict on: the reviewer rules on
+  // them, not the author (a fix ticket would list nothing), so the delta round is asked again
+  return block(openBlocking(r, fn.f.id) ? await fixTicket(h, r, fn) : await openRound(h, r, fn, 'delta', true))
 }

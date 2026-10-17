@@ -88,7 +88,12 @@ export function canonical(v: unknown): string {
 export type EchoContent = { kind: EchoKind; title: string; lines: readonly string[]; fields: unknown; files: Readonly<Record<string, string>> }
 /** Control and format characters (ANSI escapes, bidi overrides, tag characters) made visible as `\u{…}`, so agent-written
  * text (a commit subject, a script body) can neither hide nor reorder what the pane shows, nor get the pane refused. */
-export const visible = (text: string): string => text.replace(/[\p{Cc}\p{Cf}]/gu, c => `\\u{${(c.codePointAt(0) ?? 0).toString(16)}}`)
+/** Control, format, line- and paragraph-separator characters (the last two break a line in some editors, D10-2). */
+const UNSEEN = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu
+export const visible = (text: string): string => text.replace(UNSEEN, c => `\\u{${(c.codePointAt(0) ?? 0).toString(16)}}`)
+/** A file the owner reads raw: every such character but newline and tab escaped the same way, so a bidi override, a
+ * zero-width character or a line separator from an agent's text cannot make a line read other than its bytes (D10-1). */
+export const visibleText = (text: string): string => text.split('\n').map(l => l.replace(UNSEEN, c => (c === '\t' ? c : `\\u{${(c.codePointAt(0) ?? 0).toString(16)}}`))).join('\n')
 /** §2.5: sha256 of everything the pane shows (title, lines, as drawn), the fields behind it and every file hash it names. */
 export const echoHash = (c: EchoContent): Promise<string> => sha256(canonical({ kind: c.kind, title: visible(c.title), lines: c.lines.map(visible), fields: c.fields, files: c.files }))
 export const makeEcho = async (c: EchoContent): Promise<Echo> => ({ kind: c.kind, hash: await echoHash(c), title: visible(c.title), lines: c.lines.map(visible) })

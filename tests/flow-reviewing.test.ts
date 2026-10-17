@@ -2,7 +2,7 @@ import { describe, expect, test } from 'claude-code/testing'
 import { flowCheck } from '../hooks/flow-check'
 import { onReply } from '../hooks/flow-reviewing'
 import { METHOD_HEAD, MOD_ROOT, ROOT } from './flow-fakes'
-import { added, agentRun, atB3, AUTHOR_TREE, diffKey, editRecord, ended, lastTicket, latest, SRC, START, TEST_FILE, type DriveOpts, type W } from './flow-drive'
+import { added, agentRun, atB3, AUTHOR_TREE, diffKey, editRecord, ended, lastTicket, latest, NEW_FAILED, NEW_PASSED, OLD, reportOf, SRC, START, TEST_FILE, type DriveOpts, type W } from './flow-drive'
 
 const FIX_TREE = 'd'.repeat(40)
 const FIXED_SRC = 'export const add = (a: number, b: number): number => {\n  return a + b\n}\n'
@@ -185,12 +185,171 @@ describe('flow-reviewing: findings, the fix and the delta round', () => {
     expect(r?.counters[r?.features?.[0]?.key ?? '']?.e).toBe(2)
   })
 
-  test('a fix that changes lines outside its FIX ranges is a floor finding', async () => {
+  test('D11: a fix that changes lines outside its FIX ranges gets one scope correction, free of charge; a correction that covers the hunk resolves it', async () => {
+    const { w, d } = await atB3()
+    await agentRun(w, lastTicket(w)?.id ?? '', ended(HIGH))
+    await flowCheck(w.host)
+    const key = latest(w)?.features?.[0]?.key ?? '', e = latest(w)?.counters[key]?.e
+    await fixRun(w, d, 'FIX CR-1 | tests/add.test.ts:1-1')
+    expect(latest(w)?.blocked).toBeUndefined()
+    const correction = lastTicket(w)
+    expect(correction).toMatchObject({ kind: 'fix', used: false })
+    expect(latest(w)?.round?.corrected).toBe(true)
+    expect(latest(w)?.findings.find(x => x.id === 'FL-1')).toMatchObject({ rubricId: 'fix-scope', status: 'open', loc: 'src/add.ts:1' })
+    expect(w.session().value?.tickets[correction?.id ?? '']).toContain('fix-scope finding is a hunk changed outside the FIX ranges')
+    expect(latest(w)?.counters[key]?.e).toBe(e)
+    await agentRun(w, correction?.id ?? '', ended('FIX CR-1 | tests/add.test.ts:1-1\nFIX FL-1 | src/add.ts:1-3'))
+    await flowCheck(w.host)
+    expect(latest(w)?.blocked).toBeUndefined()
+    expect(latest(w)?.findings.find(x => x.id === 'FL-1')?.status).toBe('resolved')
+    expect(lastTicket(w)).toMatchObject({ kind: 'delta', used: false })
+  })
+
+  test('D11: a hunk still outside the FIX ranges after the correction is the floor finding, for the owner', async () => {
     const { w, d } = await atB3()
     await agentRun(w, lastTicket(w)?.id ?? '', ended(HIGH))
     await flowCheck(w.host)
     await fixRun(w, d, 'FIX CR-1 | tests/add.test.ts:1-1')
+    expect(latest(w)?.round?.corrected).toBe(true)
+    // a claim that overlaps the hunk without holding it whole is no cover (D11-1)
+    await agentRun(w, lastTicket(w)?.id ?? '', ended('FIX FL-1 | src/add.ts:1-1'))
+    await flowCheck(w.host)
     expect(latest(w)?.blocked).toMatchObject({ reason: 'floor', vars: { rule: 'fix-scope', location: 'src/add.ts:1' } })
+  })
+
+  test('D11: a correction that reverts the hunk and replies REVERT is attested; the finding resolves and the round goes on', async () => {
+    const { w, d } = await atB3()
+    await agentRun(w, lastTicket(w)?.id ?? '', ended(HIGH))
+    await flowCheck(w.host)
+    await fixRun(w, d, 'FIX CR-1 | tests/add.test.ts:1-1')
+    const correction = lastTicket(w)?.id ?? ''
+    await agentRun(w, correction, ended('REVERT FL-1'), () => { w.setTree(AUTHOR_TREE); w.files.set(`${ROOT}/src/add.ts`, SRC) })
+    expect(w.session().value?.runs[correction]).toEqual({ ok: true })
+    await flowCheck(w.host)
+    expect(latest(w)?.blocked).toBeUndefined()
+    expect(latest(w)?.findings.find(x => x.id === 'FL-1')?.status).toBe('resolved')
+    expect(latest(w)?.fixMap?.['FL-1']).toBeUndefined()
+  })
+
+  test('D11-4: a served correction claim covers its hunk for the rest of the round: a red judge and a debug run after it do not reopen the finding', async () => {
+    const { w, d } = await atB3()
+    await agentRun(w, lastTicket(w)?.id ?? '', ended(HIGH))
+    await flowCheck(w.host)
+    await fixRun(w, d, 'FIX CR-1 | tests/add.test.ts:1-1')
+    const correction = lastTicket(w)?.id ?? ''
+    d.judge = { test: { exit: 1, report: reportOf([OLD, NEW_FAILED]) } } // the correction leaves a test red
+    await agentRun(w, correction, ended('FIX CR-1 | tests/add.test.ts:1-1\nFIX FL-1 | src/add.ts:1-3'))
+    await flowCheck(w.host)
+    expect(latest(w)?.findings.find(x => x.id === 'FL-1')?.status).toBe('resolved')
+    expect(lastTicket(w)).toMatchObject({ kind: 'debug', used: false })
+    expect(latest(w)?.fixMap?.['FL-1']).toEqual(['src/add.ts:1-3']) // the served claim stays for the rest of the round
+    d.judge = { test: { exit: 0, report: reportOf([OLD, NEW_PASSED]) } } // the debug run makes it green again
+    await agentRun(w, lastTicket(w)?.id ?? '', ended('REPRODUCE: test\nLOCALIZE: src/add.ts:1\nHYPOTHESIS: x\nFIX: src/add.ts:1-1\nGUARD: AC-001 adds'))
+    await flowCheck(w.host)
+    expect(latest(w)?.blocked).toBeUndefined()
+    expect(latest(w)?.findings.find(x => x.id === 'FL-1')?.status).toBe('resolved') // the re-judge still saw the claim
+    expect(lastTicket(w)).toMatchObject({ kind: 'delta', used: false })
+    expect(latest(w)?.fixMap?.['FL-1']).toBeUndefined() // gone with the round that opened
+  })
+
+  test('D11-R2-3: a fix reply naming only a finding its ticket did not carry is not attested', async () => {
+    const { w } = await atB3()
+    await agentRun(w, lastTicket(w)?.id ?? '', ended(HIGH))
+    await flowCheck(w.host)
+    const first = lastTicket(w)?.id ?? ''
+    await agentRun(w, first, ended('REVERT FL-7'))
+    expect(w.session().value?.runs[first]).toEqual({ ok: false, reason: 'the fix names no finding of its ticket' })
+    expect(latest(w)?.tickets.find(t => t.id === first)?.attested).toBeFalsy()
+    await flowCheck(w.host)
+    expect(lastTicket(w)).toMatchObject({ kind: 'fix', used: false }) // the ticket comes again, as after any unattested run
+    expect(lastTicket(w)?.id).not.toBe(first)
+  })
+
+  test('D15: a delta reply with no verdict on a fixed finding of its prefix is not attested and the round is asked again; a verdict with a reason counts', async () => {
+    const { w, d } = await atB3()
+    await agentRun(w, lastTicket(w)?.id ?? '', ended(HIGH))
+    await flowCheck(w.host)
+    await fixRun(w, d, 'FIX CR-1 | src/add.ts:1-3')
+    const delta = lastTicket(w)
+    expect(delta).toMatchObject({ kind: 'delta', used: false })
+    const key = latest(w)?.features?.[0]?.key ?? '', r = latest(w)?.counters[key]?.r ?? 0
+    await agentRun(w, delta?.id ?? '', ended('NO-FINDINGS'))
+    expect(w.session().value?.runs[delta?.id ?? '']).toEqual({ ok: false, reason: 'the delta reply gives no verdict on CR-1' })
+    await flowCheck(w.host)
+    const again = lastTicket(w)
+    expect(again).toMatchObject({ kind: 'delta', used: false })
+    expect(again?.id).not.toBe(delta?.id)
+    expect(latest(w)?.counters[key]?.r).toBe(r + 1)
+    await agentRun(w, again?.id ?? '', ended('RESOLVED CR-1: the guard sits on line 2 now\nNO-FINDINGS'))
+    await flowCheck(w.host)
+    expect(latest(w)?.blocked).toBeUndefined()
+    // the verdict landed and the gate passed: the feature is sealed (its closed findings and its round are gone)
+    expect(latest(w)?.findings.some(x => x.id === 'CR-1')).toBe(false)
+    expect(latest(w)?.round?.f).toBeUndefined()
+    expect(lastTicket(w)?.kind).not.toBe('fix')
+  })
+
+  test('D11 round 3: a correction that reverted its hunk but reported nothing is not attested, yet no fix ticket that lists nothing follows: the change is judged and the delta round opens', async () => {
+    const { w, d } = await atB3()
+    await agentRun(w, lastTicket(w)?.id ?? '', ended(HIGH))
+    await flowCheck(w.host)
+    await fixRun(w, d, 'FIX CR-1 | tests/add.test.ts:1-1')
+    const correction = lastTicket(w)?.id ?? ''
+    const key = latest(w)?.features?.[0]?.key ?? '', e = latest(w)?.counters[key]?.e
+    await agentRun(w, correction, ended('I reverted the hunk.'), () => { w.setTree(AUTHOR_TREE); w.files.set(`${ROOT}/src/add.ts`, SRC) })
+    expect(w.session().value?.runs[correction]).toEqual({ ok: false, reason: 'the fix reply names no FIX or DISPUTE line' })
+    await flowCheck(w.host)
+    expect(latest(w)?.blocked).toBeUndefined()
+    expect(latest(w)?.findings.find(x => x.id === 'FL-1')?.status).toBe('resolved')
+    expect(lastTicket(w)).toMatchObject({ kind: 'delta', used: false })
+    expect(latest(w)?.counters[key]?.e).toBe(e)
+  })
+
+  test('D11 round 3: a correction that disputes the fix-scope finding is attested, moves nothing, and the floor block goes to the owner', async () => {
+    const { w, d } = await atB3()
+    await agentRun(w, lastTicket(w)?.id ?? '', ended(HIGH))
+    await flowCheck(w.host)
+    await fixRun(w, d, 'FIX CR-1 | tests/add.test.ts:1-1')
+    const correction = lastTicket(w)?.id ?? ''
+    await agentRun(w, correction, ended('DISPUTE FL-1 | the change is needed'))
+    expect(w.session().value?.runs[correction]).toEqual({ ok: true })
+    await flowCheck(w.host)
+    expect(latest(w)?.findings.find(x => x.id === 'FL-1')?.status).toBe('open')
+    expect(latest(w)?.blocked).toMatchObject({ reason: 'floor', vars: { rule: 'fix-scope', location: 'src/add.ts:1' } })
+  })
+
+  test('D11 round 3: live findings with none open after the delta round (a disputed one of the other prefix) ask the delta round again, never a fix ticket that lists nothing', async () => {
+    const { w, d } = await atB3()
+    await agentRun(w, lastTicket(w)?.id ?? '', ended(HIGH))
+    await flowCheck(w.host)
+    await fixRun(w, d, 'FIX CR-1 | src/add.ts:1-3')
+    const delta = lastTicket(w)
+    expect(delta).toMatchObject({ kind: 'delta', used: false })
+    editRecord(w, r => ({ ...r, findings: [...r.findings, { id: 'SR-1', f: 'F-01', rubricId: 'SEC-S1', sev: 'HIGH', loc: 'src/add.ts:2', status: 'disputed' }] }))
+    const key = latest(w)?.features?.[0]?.key ?? '', r = latest(w)?.counters[key]?.r ?? 0, e = latest(w)?.counters[key]?.e
+    expect(latest(w)?.round).toMatchObject({ tree: FIX_TREE, prev: AUTHOR_TREE })
+    await agentRun(w, delta?.id ?? '', ended('RESOLVED CR-1\nNO-FINDINGS'))
+    await flowCheck(w.host)
+    expect(latest(w)?.blocked).toBeUndefined()
+    expect(lastTicket(w)).toMatchObject({ kind: 'delta', used: false })
+    expect(lastTicket(w)?.id).not.toBe(delta?.id)
+    expect(latest(w)?.counters[key]?.r).toBe(r + 1)
+    expect(latest(w)?.counters[key]?.e).toBe(e)
+    // opened again at the same tree, the round keeps its real `prev`, and the ticket shows the fix's change again
+    expect(latest(w)?.round).toMatchObject({ tree: FIX_TREE, prev: AUTHOR_TREE })
+    expect(w.session().value?.tickets[lastTicket(w)?.id ?? '']).toContain('diff --git a/src/add.ts b/src/add.ts')
+  })
+
+  test('D11: a feature fix reply with no FIX and no DISPUTE line is not attested; the fix ticket comes again', async () => {
+    const { w } = await atB3()
+    await agentRun(w, lastTicket(w)?.id ?? '', ended(HIGH))
+    await flowCheck(w.host)
+    const first = lastTicket(w)?.id ?? ''
+    await agentRun(w, first, ended('I rewrote src/add.ts.'))
+    expect(w.session().value?.runs[first]).toEqual({ ok: false, reason: 'the fix reply names no FIX or DISPUTE line' })
+    await flowCheck(w.host)
+    expect(lastTicket(w)).toMatchObject({ kind: 'fix', used: false })
+    expect(lastTicket(w)?.id).not.toBe(first)
   })
 
   test('a disputed finding the reviewer upholds goes to the owner', async () => {

@@ -13,7 +13,7 @@ import { debugTicketText, fixTicketText, newNonce, sha256 } from './flow-review'
 import { globRe, type Plan } from './flow-plan'
 import { viewText } from './flow-pack'
 import { activeView, blockFlow, dropView, mutateSession, session, type FlowHost } from './flow-host'
-import { dropEcho } from './flow-owner'
+import { dropEcho, visibleText } from './flow-owner'
 import { CLOSED, updateRecord, type Blocked, type FlowRecord, type UpdateResult } from './flow-state'
 import { issueTicket } from './flow-ticket'
 import { lintNow, PLAN_FILE } from './flow-planning'
@@ -167,9 +167,9 @@ export async function verifyStep(h: FlowHost, r: FlowRecord): Promise<void> {
     const details = (await session(h)).value.details, first = junk[0]
     return verifyTicket(h, after, 'e', nonce => fixTicketText({ f: 'verify', nonce, pluginProject, findings: junk.map(x => ({ ...x, ...details[x.id] })) }), { reason: 'junk', vars: { id: first?.id ?? '', rule: first?.rubricId ?? '', location: first?.loc ?? '' } })
   }
-  const text = viewText(await report(h, after, lint.plan, held.base, ran))
-  await h.io.write(`${r.root}/${VERIFY_FILE}`, text.text)
+  const text = viewText(await report(h, after, lint.plan, held.base, ran)), written = visibleText(text.text)
+  await h.io.write(`${r.root}/${VERIFY_FILE}`, written)
   if (text.leak) return block({ reason: 'publish', vars: { detail: VERIFY_FILE } })
-  const hash = await sha256(text.text)
+  const hash = await sha256(written)
   settled(await updateRecord(h.io, h.home, r.flowId, h.sessionId, x => ({ ...x, verifiedTree: now, verifyMdHash: hash, ...pointerFields(afterPass({ phase: 'verify', task: 'V8' }, { features: [], baselineRed: false })) })))
 }

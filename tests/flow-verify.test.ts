@@ -2,6 +2,7 @@ import { describe, expect, test } from 'claude-code/testing'
 import { flowCheck } from '../hooks/flow-check'
 import { flowStatus } from '../hooks/flow-turn'
 import { checkVerdict, noteMode } from '../hooks/flow-live'
+import { visibleText } from '../hooks/flow-owner'
 import { sha256 } from '../hooks/flow-review'
 import { METHOD_HEAD, ROOT } from './flow-fakes'
 import { added, agentLaunch, agentRun, atB3, AUTHOR_TREE, diffKey, duringJudge, editRecord, ended, lastTicket, latest, NEW_FAILED, OLD, PLAN_TEXT, reportOf, run, SRC, TEST_FILE, toV1 } from './flow-drive'
@@ -110,6 +111,11 @@ describe('flow-verify: V1 to V8', () => {
     expect(w.files.get(VERIFY)).toContain('check:test: the flaky machine clock')
     expect(w.files.get(VERIFY)).toContain('- AC-001: waived')
     expect(w.files.get(VERIFY)).toContain('Blocks the agent caused: 0')
+  })
+
+  test('D10-1: the report the owner reads raw has no control or format character but newline and tab', () => {
+    expect(visibleText('a‮b​c\td\ne\u0007')).toBe('a\\u{202e}b\\u{200b}c\td\ne\\u{7}')
+    expect(visibleText(`x${String.fromCodePoint(0x2028)}y${String.fromCodePoint(0x2029)}z`)).toBe('x\\u{2028}y\\u{2029}z') // line and paragraph separators too (D10-2)
   })
 
   test('D12-2: a ticket issued after the seal gets an id past the sealed feature\'s, and its agent is not refused as settled', async () => {

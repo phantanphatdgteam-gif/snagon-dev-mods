@@ -84,16 +84,16 @@ async function releaseEcho(h: FlowHost, r: FlowRecord, rel: Rel): Promise<EchoCo
   const sealed = r.seals.at(-1)?.tree, tree = r.verifiedTree ?? ''
   const unreviewed = sealed && sealed !== tree ? names(await gitText(h, r, ['diff', '--name-only', '-z', sealed, tree])) : []
   const untracked = names(await gitText(h, r, ['ls-files', '-z', '--others', '--exclude-standard']))
-  const report = (await h.io.read(`${r.root}/${VERIFY_FILE}`).catch(() => '')).split('\n')
+  // the verify report stays in its file, named with its hash (the approval binds it through `files`): an echo that
+  // carried the report ran past a 60-row terminal and hid the line to type (dry run of step 13, D10)
   const lines = [
     t('echo.release.head', { head: rel.head.slice(0, 12), branch }), t('echo.release.remote', { url, branch }), t('echo.release.keys', { keys: keys.join(', ') || t('echo.none') }),
     t('echo.release.commits', { count }), ...commits.map(c => `  ${c}`), ...(count > commits.length ? [t('echo.release.more', { n: count - commits.length })] : []),
     t('echo.release.scan'), t('echo.release.unreviewed', { files: list(unreviewed) }), t('echo.release.untracked', { files: list(untracked) }),
     t('echo.release.self', { n: r.selfBlocks ?? 0 }), t('echo.release.tree', { tree: tree.slice(0, 12) }), t('echo.release.verify', { hash: (r.verifyMdHash ?? '').slice(0, 8) }),
-    '', ...report,
   ]
   // commit subjects are the agent's words
-  return { kind: 'release', title: t('echo.release', { address: h.address }), lines: lines.map(redactSecrets), fields: { head: rel.head, revsHash: rel.revsHash, branch, url }, files: { verify: r.verifyMdHash ?? '' } }
+  return { kind: 'release', title: t('echo.release', { address: h.address }), lines: lines.map(redactSecrets), fields: { head: rel.head, revsHash: rel.revsHash, branch, url }, files: { verify: await sha256(await h.io.read(`${r.root}/${VERIFY_FILE}`).catch(() => '')) } }
 }
 
 /** /flow-ship: at H0 (or showing the release again at H1, or after a publish block) the checks, the scan, the echo. */

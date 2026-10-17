@@ -61,7 +61,8 @@ export type FlowRecord = {
    * stay used, so an id never names two findings (the session keeps reviewers' words and disputes by id). */
   lastIds?: Record<string, number>
 }
-export type ReviewRound = { f: string; tree: string; prev?: string; tickets: string[] }
+/** `corrected`: this round had its one scope correction (§4.5); the next fix-scope finding blocks for the owner. */
+export type ReviewRound = { f: string; tree: string; prev?: string; tickets: string[]; corrected?: boolean }
 /** Every failure is a reason the caller turns into `blocked: could not run (record)`; none is silently passed. */
 export type RecordFailure = 'conflict' | 'invalid' | 'too-large' | 'io' | 'missing' | 'rejected' | 'rollback' | 'ended'
 export type UpdateResult = { ok: true; record: FlowRecord; staleRead: boolean } | { ok: false; reason: RecordFailure; detail?: string }
@@ -141,7 +142,7 @@ const CHECKS: ReadonlyArray<readonly [string, (r: Obj) => boolean]> = [
   ['awaiting', r => optional(r.awaiting, str)],
   ['cost', r => optional(r.flowCap, num) && optional(r.spent, num)],
   ['ticketSeq', r => optional(r.ticketSeq, count)],
-  ['round', r => optional(r.round, x => isObject(x) && str(x.f) && str(x.tree) && optional(x.prev, str) && strings(x.tickets))],
+  ['round', r => optional(r.round, x => isObject(x) && str(x.f) && str(x.tree) && optional(x.prev, str) && strings(x.tickets) && optional(x.corrected, b => typeof b === 'boolean'))],
   ['fixMap', r => optional(r.fixMap, m => values(m, strings))],
   ['lastIds', r => optional(r.lastIds, m => values(m, count))],
   ['selfBlocks', r => optional(r.selfBlocks, count)],

@@ -93,7 +93,10 @@ describe('flow-ship: H0 and the release echo', () => {
     expect(lines).toContain('Untracked, not in the release: none')
     expect(lines).toContain('Blocks the agent caused: 0')
     expect(lines).toContain(`Release tree: ${AUTHOR_TREE.slice(0, 12)}`)
-    expect(lines).toContain('- AC-001: passed')
+    // D10: the report stays in its file, named with its hash; the echo fits a screen
+    expect(lines.some(l => /^Verify report: docs\/flow\/verify\.md \([0-9a-f]{8}\)$/.test(l))).toBe(true)
+    expect(lines).not.toContain('- AC-001: passed')
+    expect(lines.filter(l => !l.startsWith('  ')).length).toBeLessThan(20) // besides the commit list, a dozen lines
   })
 
   test('a secret in a commit subject is redacted in the echo', async () => {

@@ -112,6 +112,8 @@ export function fixTicketText(t: FixTicket): string | null {
     'For each one, one line: FIX <id> | <path>:<start>-<end> (the lines you changed), or DISPUTE <id> | <evidence that it is not a defect>.',
     `One finding may have several FIX lines; together they cover at most ${MAX_FIX_SPAN} lines. A deletion sits at the line that now follows it. A larger fix goes back through the plan.`,
     'Change nothing else: every changed hunk must overlap a FIX range or sit in a test file of this feature, outside the RED tests.',
+    'Edit each hunk with the Edit tool and report it; never rewrite a file with Write. A reply with no FIX and no DISPUTE line is not attested, and the ticket comes again.',
+    ...(open.some(x => x.rubricId === 'fix-scope') ? ['A fix-scope finding is a hunk changed outside the FIX ranges: revert it and reply REVERT <its id>; or, if the change is needed, report FIX <its id> | <path>:<start>-<end> that contains the whole hunk (the range starts at or before the finding\'s line).'] : []),
   ])
 }
 
@@ -188,13 +190,18 @@ const collapse = (p: string): string => {
 }
 function normLoc(raw: string, files: readonly string[], roots: readonly string[] = []): string {
   const given = raw.trim().replace(/^[`'"]+|[`'"]+$/g, '').replace(/^([^\s|]+:\d+):\d+$/, '$1')
-  // a reviewer that read the file by its absolute path names it so (dry run of step 13, D8: a HIGH finding was dropped);
-  // the root as given and as resolved (/tmp vs /private/tmp), the path collapsed first (SEC13-5)
-  const abs = given.startsWith('/') ? collapse(given) : given
-  const root = roots.map(collapse).find(r => r !== '/' && abs.startsWith(`${r}/`))
-  const loc = root !== undefined ? abs.slice(root.length + 1) : given
+  const loc = relative(given, roots)
   const bare = loc.replace(/^(?:[ab]\/|\.\/)/, '')
   return bare !== loc && !files.includes(pathOf(loc) ?? '') && files.includes(pathOf(bare) ?? '') ? bare : loc
+}
+/** A path or location as the artifact names it: an absolute one under the project root made relative. A reviewer that
+ * read the file by its absolute path names it so (dry run of step 13, D8: a HIGH finding was dropped), and so does the
+ * fix agent in a FIX line (dry run 18, D14); the root as given and as resolved (/tmp vs /private/tmp), the path
+ * collapsed first (SEC13-5). */
+function relative(given: string, roots: readonly string[]): string {
+  const abs = given.startsWith('/') ? collapse(given) : given
+  const root = roots.map(collapse).find(r => r !== '/' && abs.startsWith(`${r}/`))
+  return root !== undefined ? abs.slice(root.length + 1) : given
 }
 /** A location's lines (`a.ts:3` → 3–3, `a.ts:3-9` → 3–9). */
 const linesOf = (loc: string): { start: number; end: number } | null => { const m = LOC.exec(loc); return m ? { start: Number(m[2]), end: Number(m[3] ?? m[2]) } : null }
@@ -235,7 +242,8 @@ export function parseFindings(reply: string, nonce: string, ctx: ParseCtx): { en
 }
 
 export type Range = { path: string; start: number; end: number }
-export type Replies = { status: Record<string, 'RESOLVED' | 'OPEN' | 'UPHOLD' | 'WITHDRAW'>; fixes: Record<string, Range[]>; disputes: Record<string, string> }
+/** `named`: the id of every FIX, DISPUTE or REVERT line, in order, whether or not its range could be read. */
+export type Replies = { status: Record<string, 'RESOLVED' | 'OPEN' | 'UPHOLD' | 'WITHDRAW'>; fixes: Record<string, Range[]>; disputes: Record<string, string>; reverts: string[]; named: string[] }
 /** The most lines the FIX ranges of one finding may claim together. It bounds the claim, not the edit: a hunk that
  * overlaps a range by one line passes the scope check whole (plan §4.5 "overlap"; follow-up F36). */
 export const MAX_FIX_SPAN = 200
@@ -244,13 +252,28 @@ const rangeOf = (text: string): Range | null => {
   const m = RANGE.exec(text.trim()), start = Number(m?.[2]), end = Number(m?.[3])
   return m && start >= 1 && start <= end ? { path: m[1] ?? '', start, end } : null
 }
+const LINE = /^([^\s:|][^\s|]*):(\d+)$/
+/** The range of a FIX line: `path:a-b` (or `path:n`, the line n alone) by itself, or as its first word before a reason
+ * (dry run 18, D14: `… src/x.ts:16-16 (why)` was dropped, and the hunk it named became a fix-scope finding); quotes
+ * and trailing punctuation off, an absolute path under the project root made relative. */
+const fixRange = (rest: string, roots: readonly string[]): Range | null => {
+  // the word cut at 512 characters: no path is longer, and the strip is quadratic on a long run of punctuation (review)
+  const word = (rest.trim().split(/\s/, 1)[0] ?? '').slice(0, 512).replace(/^[`'"]+|[`'"),.;:]+$/g, '')
+  const one = LINE.exec(word), line = Number(one?.[2])
+  const g = rangeOf(rest) ?? rangeOf(word) ?? (one && line >= 1 ? { path: one[1] ?? '', start: line, end: line } : null)
+  return g && { ...g, path: relative(g.path.replace(/^[`'"]+/, ''), roots) }
+}
 /** Delta replies (`RESOLVED X-1`) and edit replies (`FIX X-1 | path:3-9`, one line per changed range, `DISPUTE X-1 |
  * evidence`); a line in any other shape is ignored, and the first status or dispute for an id stands. */
-export function parseReplies(text: string): Replies {
-  const out: Replies = { status: {}, fixes: {}, disputes: {} }
+export function parseReplies(text: string, roots: readonly string[] = []): Replies {
+  const out: Replies = { status: {}, fixes: {}, disputes: {}, reverts: [], named: [] }
   for (const line of text.split('\n').map(l => l.trim())) {
-    const s = /^(RESOLVED|OPEN|UPHOLD|WITHDRAW)\s+([A-Z]+-\d+)$/.exec(line), fx = /^FIX\s+([A-Z]+-\d+)\s*\|\s*(.+)$/.exec(line), d = /^DISPUTE\s+([A-Z]+-\d+)\s*\|\s*(\S.*)$/.exec(line)
-    const range = fx ? rangeOf(fx[2] ?? '') : null
+    // a verdict or a REVERT may go on after the id with a colon and a reason (dry run 18, D15: `RESOLVED CR-2: …` was dropped)
+    const s = /^(RESOLVED|OPEN|UPHOLD|WITHDRAW)\s+([A-Z]+-\d+)(?![\w-])/.exec(line), fx = /^FIX\s+([A-Z]+-\d+)\s*\|\s*(.+)$/.exec(line), d = /^DISPUTE\s+([A-Z]+-\d+)\s*\|\s*(\S.*)$/.exec(line)
+    const rv = /^REVERT\s+(FL-\d+)(?![\w-])/.exec(line), id = fx?.[1] ?? d?.[1] ?? rv?.[1]
+    if (rv?.[1] && !out.reverts.includes(rv[1])) out.reverts = [...out.reverts, rv[1]]
+    if (id && !out.named.includes(id)) out.named = [...out.named, id]
+    const range = fx ? fixRange(fx[2] ?? '', roots) : null
     if (s?.[2] && !(s[2] in out.status)) out.status[s[2]] = s[1] as Replies['status'][string]
     if (fx?.[1] && range) out.fixes[fx[1]] = [...(out.fixes[fx[1]] ?? []), range]
     if (d?.[1] && !(d[1] in out.disputes)) out.disputes[d[1]] = redactSecrets((d[2] ?? '').trim())
@@ -266,8 +289,16 @@ export function applyFix(findings: readonly Finding[], r: Replies, featureFiles:
     const lines = acc.lines + g.end - g.start + 1
     return lines <= MAX_FIX_SPAN ? { kept: [...acc.kept, g], lines } : acc
   }, { kept: [], lines: 0 }).kept
-  const fixMap = Object.fromEntries(findings.filter(fixable).map(x => [x.id, within(r.fixes[x.id] ?? []).map(g => `${g.path}:${g.start}-${g.end}`)] as const).filter(([, gs]) => gs.length))
-  return { findings: findings.map(x => (!fixable(x) ? x : fixMap[x.id] ? { ...x, status: 'fixed-unconfirmed' } : x.id in r.disputes ? { ...x, status: 'disputed' } : x)), fixMap }
+  // a claim on a fix-scope finding is tied to the flagged line: a range elsewhere is no cover for it (D11-1, R-3)
+  const tied = (x: Finding, gs: readonly Range[]): Range[] => {
+    if (!SCOPE_ID.test(x.id)) return [...gs]
+    const at = /^(.+):(\d+)$/.exec(x.loc), line = Number(at?.[2] ?? NaN)
+    return gs.filter(g => at !== null && g.path === at[1] && g.start <= line && line <= g.end)
+  }
+  const fixMap = Object.fromEntries(findings.filter(fixable).map(x => [x.id, within(tied(x, r.fixes[x.id] ?? [])).map(g => `${g.path}:${g.start}-${g.end}`)] as const).filter(([, gs]) => gs.length))
+  // a fix-scope finding is answered by a revert or a containing claim, never disputed: no reviewer would rule on it,
+  // and its exit is the owner's floor block (security review of D11, round 3)
+  return { findings: findings.map(x => (!fixable(x) ? x : fixMap[x.id] ? { ...x, status: 'fixed-unconfirmed' } : x.id in r.disputes && !SCOPE_ID.test(x.id) ? { ...x, status: 'disputed' } : x)), fixMap }
 }
 
 const MOVE: Readonly<Record<'RESOLVED' | 'OPEN' | 'WITHDRAW', string>> = { RESOLVED: 'resolved', OPEN: 'reopened', WITHDRAW: 'withdrawn' }
@@ -304,9 +335,14 @@ export function changedHunks(files: readonly DiffFile[]): Range[] {
   })
 }
 /** §4.5: every changed hunk overlaps a FIX range or sits in a feature test file (the RED freeze guards the RED tests). */
-export function scopeViolations(hunks: readonly Range[], fixMap: Readonly<Record<string, readonly string[]>>, testFiles: readonly string[]): string[] {
-  const fixes = Object.values(fixMap).flat().map(rangeOf).filter((g): g is Range => g !== null)
-  return hunks.filter(h => !testFiles.includes(h.path) && !fixes.some(g => g.path === h.path && g.start <= h.end && h.start <= g.end)).map(h => `${h.path}:${h.start}`)
+export function scopeViolations(hunks: readonly Range[], fixMap: Readonly<Record<string, readonly string[]>>, testFiles: readonly string[], flagged: Readonly<Record<string, string>> = {}): string[] {
+  const entries = Object.entries(fixMap).flatMap(([id, gs]) => gs.map(rangeOf).filter((g): g is Range => g !== null).map(g => ({ id, g })))
+  const fixes = entries.filter(e => !SCOPE_ID.test(e.id)), covers = entries.filter(e => SCOPE_ID.test(e.id))
+  // a fix claims a hunk by overlap (§4.5); a scope correction's claim (an FL id) counts only for the one hunk that
+  // finding flagged (`flagged`, id → path:start), and only when it holds that hunk whole (D11-1, D11-R2-2)
+  const claimed = (h: Range): boolean => fixes.some(({ g }) => g.path === h.path && g.start <= h.end && h.start <= g.end)
+    || covers.some(({ id, g }) => flagged[id] === `${h.path}:${h.start}` && g.path === h.path && g.start <= h.start && h.end <= g.end)
+  return hunks.filter(h => !testFiles.includes(h.path) && !claimed(h)).map(h => `${h.path}:${h.start}`)
 }
 
 export type GateInput = { judge: { tree: string; green: boolean }; currentTree: string; lastRound?: { tree: string; reviewers: readonly string[] }; required: readonly string[]; findings: readonly FindingDigest[] }
@@ -345,6 +381,12 @@ export async function spawnDecision(s: SpawnIn, ctx: SpawnCtx): Promise<SpawnOut
 
 /** Tickets whose agents change the tree by design: their rounds are not bound to the tree they were issued at. */
 export const TREE_CHANGERS: ReadonlySet<string> = new Set(['fix', 'debug', 'red', 'author'])
+/** A fix reply's line that reports a change (`FIX X-n | path:a-b`), disputes a finding (`DISPUTE X-n | …`) or reports
+ * a reverted out-of-range hunk (`REVERT FL-n`, the scope correction's other answer). */
+// `[ \t]`, never `\s`: with the m flag a run of blank lines would be tried from every line start in it (review, round 3)
+const FIX_OR_DISPUTE = /^[ \t]*(?:(?:FIX|DISPUTE)[ \t]+[A-Z]+-\d+[ \t]*\||REVERT[ \t]+FL-\d+)/m
+/** A fix-scope finding's id: its FIX ranges are claims on the flagged hunk, not fixes (§4.5, one correction per round). */
+const SCOPE_ID = /^FL-\d+$/
 export type AgentRun = { toolUseId: string; status: string; agentId: string; text: string; events: readonly { agentId: string; tool: string; skill?: string; ok: boolean }[] }
 /** Tools that read or change nothing an agent works on; any other tool (Read, Bash, Monitor, LSP, …) counts as a use. */
 const BEFORE_SKILL_OK = new Set(['ToolSearch', 'TodoWrite'])
@@ -356,6 +398,9 @@ export function attest(t: TicketRecord, run: AgentRun, ctx: { treeNow: string; p
   if (!t.toolUseId || run.toolUseId !== t.toolUseId || (t.agentId !== undefined && run.agentId !== t.agentId)) return no('not the recorded call')
   if (run.status !== 'completed') return no('the run did not complete')
   if (!untilEnd(run.text, t.nonce).ended) return no('the answer does not end with the round nonce')
+  // §4.5: a feature fix reports what it changed (FIX) or why not (DISPUTE); a fix that reported nothing had rewritten
+  // files outside any range in every dry run of step 13 (D11), so it is not attested and the ticket comes again
+  if (t.kind === 'fix' && t.f !== 'verify' && !FIX_OR_DISPUTE.test(run.text)) return no('the fix reply names no FIX or DISPUTE line')
   if (!TREE_CHANGERS.has(t.kind ?? '') && ctx.treeNow !== t.tree) return no('the tree changed since the ticket was issued')
   if (ctx.pluginProject) {
     const mine = run.events.filter(e => e.agentId === run.agentId)

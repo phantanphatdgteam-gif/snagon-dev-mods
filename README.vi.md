@@ -1,6 +1,6 @@
 # snagon-dev-mods
 
-Phiên bản 0.5.1. Bản tiếng Anh: [README.md](README.md). Hướng dẫn đầy đủ (tiếng Anh): [docs/guide.md](docs/guide.md).
+Phiên bản 0.5.2. Bản tiếng Anh: [README.md](README.md). Hướng dẫn đầy đủ (tiếng Anh): [docs/guide.md](docs/guide.md).
 
 ## Đây là gì
 

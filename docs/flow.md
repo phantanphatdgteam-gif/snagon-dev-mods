@@ -29,11 +29,12 @@ Flow chỉ chạy khi sandbox Bash có sẵn của Claude Code đang bật cho d
 - Trong lúc flow chạy, mỗi lần `flow_check` so cấu hình sandbox (bản ghép và từng lớp) với bản đã duyệt; khác là chặn (`cấu hình sandbox khác khối đã duyệt`), lối ra là `/flow-setup`.
 - Chế độ quyền `bypassPermissions` cho lệnh ra khỏi sandbox mà không hỏi, nên khi flow bật ở chế độ đó chỉ được đọc; hãy đổi chế độ (shift+tab).
 - Judge chạy lệnh test/lint/build trong `sandbox-exec` của macOS với môi trường rỗng và không có mạng. Trên máy không phải macOS, judge không chạy: flow bị chặn ở lần judge đầu (`một phép kiểm không chạy được`). Plan §2.6 ghi "Linux chạy không sandbox cho tới R2"; bản hiện tại chọn chặn hẳn.
+- Sau một ticket sửa, mọi hunk thay đổi phải nằm trong FIX range mà agent báo (hoặc trong file test của tính năng). Nếu không, flow giao một ticket sửa phạm vi (một lần mỗi vòng review, không tính vòng): agent hoàn lại hunk đó hoặc báo range phủ nó. Lần sau vẫn lệch thì flow chặn và hỏi Chủ dự án miễn trừ (`/flow-waive FL-n`).
 - Khi flow xong, file `.claude/settings.local.json` vẫn giữ khối sandbox; Chủ dự án có thể xóa nếu muốn.
 
 ## 2. Kiểm lại sau commit định dạng lại
 
-Ở bước phát hành, `/flow-ship` đòi phần đã kiểm tra phải được commit. Nếu chưa, agent chạy `git add -A` rồi `git commit`; hook commit của dự án chạy như bình thường. Nếu một hook pre-commit định dạng lại file (prettier, `eslint --fix` qua husky hay lint-staged), nội dung commit không còn đúng cây đã kiểm tra, và lần `/flow-ship` kế tiếp báo:
+Ở bước phát hành, khung duyệt chỉ tóm tắt (commit, remote, kết quả quét, hash của báo cáo kiểm tra) để vừa một màn hình; báo cáo đầy đủ nằm ở `docs/flow/verify.md`. `/flow-ship` đòi phần đã kiểm tra phải được commit. Nếu chưa, agent chạy `git add -A` rồi `git commit`; hook commit của dự án chạy như bình thường. Nếu một hook pre-commit định dạng lại file (prettier, `eslint --fix` qua husky hay lint-staged), nội dung commit không còn đúng cây đã kiểm tra, và lần `/flow-ship` kế tiếp báo:
 
 > Mã nguồn đã đổi sau khi kiểm tra. Chạy lại /flow-verify trước khi phát hành.
 

@@ -8,16 +8,17 @@ import type { FindingDigest } from './flow-state'
 import { addedTests, declChanges, evalIdsInTests, judgeRun, outOfScope, securityForced, timeoutFor, MAX_RUN_MS, type Verdict } from './flow-judge'
 import { parseDiff, scan, type ScanFinding } from './flow-scan'
 import { ignoredSet } from './flow-git'
-import { changedHunks, debugTicketText, scopeViolations, sha256 } from './flow-review'
+import { changedHunks, debugTicketText, fixTicketText, scopeViolations, sha256 } from './flow-review'
+import { issueTicket } from './flow-ticket'
 import { canonical } from './flow-owner'
 import { globRe, type FeatureRow, type Plan } from './flow-plan'
 import type { RedShape } from './flow-scan'
-import { blockFlow, dropView, type FlowHost } from './flow-host'
+import { blockFlow, dropView, session, type FlowHost } from './flow-host'
 import { updateRecord, usedIds, type Blocked, type FlowRecord, type UpdateResult } from './flow-state'
 import { capRound, featureNow, featureTicket, redFile, type FeatureNow } from './flow-build'
 import { methodText } from './flow-method'
 import { frozenBaseline, IGNORED_SKIP, type BaselineFile } from './flow-baseline'
-import { diffBetween } from './flow-reviewing'
+import { diffBetween, START_PROMPT } from './flow-reviewing'
 import { judgedRun } from './flow-run'
 
 const TEST_RUNNERS = new Set(['vitest', 'jest'])
@@ -92,10 +93,39 @@ async function fixScope(h: FlowHost, r: FlowRecord, fn: FeatureNow): Promise<Sca
   const round = r.round?.f === fn.f.id ? r.round : undefined
   if (!round || round.tree === fn.now) return []
   const hunks = changedHunks(parseDiff(await diffBetween(h, fn.p, round.tree, fn.now)))
-  return scopeViolations(hunks, r.fixMap ?? {}, fn.tests).map((loc): ScanFinding => ({ kind: 'FL', rule: 'fix-scope', sev: 'HIGH', loc }))
+  // a scope correction's claim (an FL id) covers only the hunk that finding flagged (D11-R2-2); the claims leave the fix
+  // map when the next round opens (openRound), so they cover that hunk for the rest of this round, debug runs included
+  const flagged = Object.fromEntries(r.findings.filter(x => x.f === fn.f.id && /^FL-\d+$/.test(x.id)).map(x => [x.id, x.loc]))
+  return scopeViolations(hunks, r.fixMap ?? {}, fn.tests, flagged).map((loc): ScanFinding => ({ kind: 'FL', rule: 'fix-scope', sev: 'HIGH', loc }))
 }
 
-/** flow_check at B3 (and after a fix): the twelve checks, then a block, a debug ticket (task B3) or review (task B4, true). */
+/** §4.5: one scope correction per round, and only after an edit run of the round, a fix or a debug (a change during
+ * review with no edit ticket is the owner's to judge): the round is this feature's and its newest ticket is an attested
+ * fix or debug and the round is not corrected yet; or the correction itself was lost in a restart (used, never started),
+ * and comes again free, as every lost ticket does. */
+const correctionDue = (r: FlowRecord, f: string): boolean => {
+  const newest = [...r.tickets].reverse().find(t => t.f === f)
+  if (r.round?.f !== f || !newest) return false
+  const lostCorrection = r.round.corrected === true && newest.kind === 'fix' && newest.used && newest.toolUseId === undefined
+  return lostCorrection || (r.round.corrected !== true && (newest.kind === 'fix' || newest.kind === 'debug') && newest.attested === true)
+}
+/** The feature's open scanned HIGH findings; the correction is for fix-scope ones alone (R-2: a RED-test, injection,
+ * out-of-scope or junk finding beside them blocks for the owner as before, and counts as a self-caused block). */
+const openScannedHigh = (fs: readonly FindingDigest[], f: string): FindingDigest[] => fs.filter(x => x.f === f && SCANNED.test(x.id) && x.status === 'open' && x.sev === 'HIGH')
+/** The correction ticket: a fix ticket carrying the fix-scope findings (and whatever else is open), so the author
+ * confines the change to its FIX ranges or reports ranges that cover the hunks it needed. The round is not charged: the
+ * correction is part of it (dry run of step 13, D11: two or three FL findings and four owner commands per fix round,
+ * mostly a fix that reported no ranges). */
+async function correctionTicket(h: FlowHost, r: FlowRecord, fn: FeatureNow): Promise<void> {
+  const details = (await session(h)).value.details
+  const findings = r.findings.filter(x => x.f === fn.f.id).map(x => ({ ...x, ...details[x.id] }))
+  const id = await issueTicket(h, r, { role: 'author', f: fn.f.id, kind: 'fix', build: nonce => fixTicketText({ f: fn.f.id, nonce, pluginProject: r.setup?.pluginProject ?? false, findings }), also: x => ({ ...x, round: x.round ? { ...x.round, corrected: true } : x.round }) })
+  if (id === null) { await blockFlow(h, r.flowId, { reason: 'split', vars: { id: fn.f.id } }); return }
+  await h.submit(START_PROMPT)
+}
+
+/** flow_check at B3 (and after a fix): the twelve checks, then a block, a scope correction, a debug ticket (task B3) or
+ * review (task B4, true). */
 export async function judgeStep(h: FlowHost, r: FlowRecord): Promise<boolean> {
   const block = async (why: Blocked): Promise<false> => { await blockFlow(h, r.flowId, why); return false }
   const fn = await featureNow(h, r)
@@ -125,8 +155,11 @@ export async function judgeStep(h: FlowHost, r: FlowRecord): Promise<boolean> {
     const findings = mergeFindings(x.findings, fn.f.id, found, x.lastIds)
     return { ...x, findings, judge: { tree: fn.now, green, task: 'B3', f: fn.f.id, at: now }, task: green && !openIn(findings) ? 'B4' : 'B3', ...(forced ? { frozen: { ...x.frozen, [`security:${fn.f.id}`]: 'forced' } } : {}) }
   }))
-  const open = openIn(after.findings)
-  if (open) return block(findingBlock(open))
+  const opens = openScannedHigh(after.findings, fn.f.id), other = opens.find(x => x.rubricId !== 'fix-scope')
+  if (opens.length) {
+    if (!other && correctionDue(after, fn.f.id)) { await correctionTicket(h, after, fn); return false }
+    return block(findingBlock(other ?? opens[0] as FindingDigest))
+  }
   if (!green) { await debugTicket(h, after, fn, judged.failing ?? 'a check failed'); return false }
   return true
 }
