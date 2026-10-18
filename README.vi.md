@@ -85,7 +85,7 @@ flowchart TD
 - Chỉ cần Claude Code: một module hook, không Node.js, npm, máy chủ MCP hay dịch vụ chạy nền.
 - Thiếu gì vẫn chạy: không có sqlite3 thì bộ nhớ vẫn dùng được, công cụ còn thiếu được báo kèm lệnh cài chính xác, và mọi bước hook đều thất bại một cách an toàn. Riêng flow thì đóng chặt: guard nào không quyết được thì từ chối lệnh gọi đó.
 - Thông báo từ chối nêu tên file và loại bí mật, không bao giờ nêu giá trị.
-- Đã kiểm thử: 545 test tự động và bảy bước kiểm tra với công cụ thật. Flow còn được chạy trọn trên một dự án thử có ba tính năng, với một script gõ lệnh thay Chủ dự án (các lượt 11, 15, 17, 18 và 19 tới được bước phát hành), và bốn kịch bản an toàn đã viết đều đạt cả ba lượt chạy. Kết quả nằm trong [evals/flow/](evals/flow/README.md).
+- Đã kiểm thử: 569 test tự động và tám bước kiểm tra với công cụ thật. Flow còn được chạy trọn trên một dự án thử có ba tính năng, với một script gõ lệnh thay Chủ dự án (các lượt 11, 15, 17, 18, 19 và 20 tới được bước phát hành), và bốn kịch bản an toàn đã viết đều đạt cả ba lượt chạy. Kết quả nằm trong [evals/flow/](evals/flow/README.md).
 - Mở: giấy phép MIT, ghi công các nguồn.
 
 ## Tài liệu

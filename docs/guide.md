@@ -319,7 +319,7 @@ Main does not write the plan, the tests or the code itself; the flow rules tell 
 
 | Command | Use |
 |---|---|
-| `/flow-setup [test\|lint\|typecheck\|build="<argv>"] [<command>=none] [tools=+<Tool>] [mcp=+<MCP tool>]` | Start a flow, or freeze the setup again (commands, tools, MCP tools) |
+| `/flow-setup [test\|lint\|typecheck\|build="<argv>"] [<command>=none] [tools=+<Tool>] [mcp=+mcp__<server>__<tool>]` | Start a flow, or freeze the setup again (commands, tools, MCP tools) |
 | `/flow-plan <what to build>` | Hand the request to the planner |
 | `/flow-plan` | Show the checked plan for approval |
 | `/flow-build` | Build the features of the approved plan |
@@ -332,7 +332,7 @@ Main does not write the plan, the tests or the code itself; the flow rules tell 
 | `/flow-waive check:<cmdId>\|FL-n\|J-n <reason>` | Waive a red check, or a floor or junk finding; the waiver shows in the pane and needs `/flow-approve waive <hash8>` |
 | `/flow-reject plan` | Reject the plan and plan again |
 | `/flow-status` | Show where the flow stands |
-| `/flow-off [<id8>]` | End the flow; its files in `.snagon/flow` stay as history |
+| `/flow-off [<id8>]` | End the flow (its files in `.snagon/flow` stay as history), then name any repository config or git hook that changed since the freeze, and remind you to review `package.json` and the lockfile, reinstall the dependencies and look at the git hooks before your next commit |
 
 Flow commands count only when you type them at the prompt or send them through Remote Control, and a release approval only at the prompt. The model cannot run them, as commands or as skills. A command typed while an agent works is queued and runs when the turn ends. A long text pasted after a command is sent to the model as a prompt, and the command never runs: keep the command short and put the description in a file (`/flow-plan Build the features described in docs/intent.md`).
 
@@ -397,8 +397,8 @@ Blocked is not done. The card says `Blocked, NOT done: <cause>`, and its last li
 | A scope used all its rounds (`cap`); the reviewer upheld a disputed finding (`dispute`) | `/flow-decide <X-n> fix\|reject\|followup` · `/flow-retry <scope>` · `/flow-reject plan` |
 | The approved plan changed (`frozenChanged`); a feature too large for one ticket (`split`); plan check errors (`planLint`) | `/flow-reject plan` |
 | A file that decides what the commands do changed (`cmdSrc`); the remote or the git settings of the push changed (`remoteChanged`); a command ran too long (`tooSlow`); the sandbox differs from the approved block (`sandboxMismatch`); the sandbox probe was inconclusive (`probeInconclusive`); a settings key lets commands leave the sandbox (`sandboxKey`) | `/flow-setup` |
-| A protected file changed (`tampered`) | `/flow-setup` · `/flow-off` |
-| A check could not run (`couldNotRun`) | `/flow-retry check` |
+| A protected file changed (`tampered`); after a mod update the card names the old and the new version | `/flow-setup` · `/flow-off` |
+| A check could not run (`couldNotRun`) | `/flow-retry check`; when the repository config or git hooks could not be read: fix that, then `/flow-setup` |
 | Main did not start its ticket after 3 reminders (`stalled`) | `/flow-retry check` · `/flow-off` |
 | A cost cap was reached (`cost`) | `/flow-retry cost` · `/flow-off` |
 | A command is red (`redCheck`) | `/flow-waive check:<cmdId> <reason>` |
@@ -417,7 +417,7 @@ Blocked is not done. The card says `Blocked, NOT done: <cause>`, and its last li
 - Only ticket agents and read-only `Explore` agents start. The flow rules tell main not to write the feature itself, and while the last check is red only the feature's files may change.
 - Nothing runs in the background: `run_in_background`, an `&` that sends a command to the background, `setsid`, `tmux`, `screen` and Monitor are refused, because a background process could swap files between the judge's check and its run.
 - Nothing is published before the release: `git push`, `npm publish` and their relatives are refused. The mod pushes after your release approval.
-- Tools outside the flow's list (WebFetch, WebSearch, an MCP tool you have not added) are refused. Add a tool with `/flow-setup tools=+<Name>`, or an MCP tool by its full name with `/flow-setup mcp=+<tool>`; the refusal gives the exact command.
+- Tools outside the flow's list (WebFetch, WebSearch, an MCP tool you have not added) are refused. Add a tool with `/flow-setup tools=+<Name>`, or an MCP tool by its full name with `/flow-setup mcp=+mcp__<server>__<tool>`; the refusal gives the exact command.
 - `.snagon/`, `.claude/`, `.git`, `.mcp.json` and the other protected files stay unchanged, apart from `*.md` files directly in the journal folder and the two writes the flow asks for (the approved settings block, the release commit). Flow data and transcripts cannot be read.
 - Screen capture (`screencapture`, `osascript`, screen-reading MCP tools) is refused, since approvals and the release code are on the screen.
 - A guard that cannot decide refuses the call (`flow: the guard could not check this call, so it is refused`).
@@ -426,10 +426,10 @@ Blocked is not done. The card says `Blocked, NOT done: <cause>`, and its last li
 
 [flow.md](flow.md) gives the full detail of four things, in Vietnamese. In short:
 
-1. The sandbox is required. `/flow-setup` refuses settings that loosen it (`excludedCommands`, `allowUnixSockets`, `allowedDomains: ["*"]` and the like) and names the layer that holds them. The probe must fail inside the sandbox while the same request works outside it; an offline machine makes the probe inconclusive. In `acceptEdits` mode Claude Code may ask to allow a connection outside the sandbox: decline it with Esc unless you want that host open.
+1. The sandbox is required. `/flow-setup` refuses settings that loosen it (`excludedCommands`, `allowUnixSockets`, `allowedDomains: ["*"]` and the like) and names the layer that holds them. The probe must fail inside the sandbox while the same request works outside it; an offline machine makes the probe inconclusive. In `acceptEdits` mode Claude Code may ask to allow a connection outside the sandbox: decline it with Esc unless you want that host open. Every program the mod runs outside the sandbox (git, find, sqlite3, the handoff's claude) and the judge get a PATH without the entries the agent could write; the echo shows that PATH, the git it runs and what it left out. The judge cannot make hard links. The repository config hash covers the git hooks folder (husky 9's `.husky/_` too) and binds the setup approval: a change before the probe blocks the flow instead of being frozen.
 2. A commit hook that reformats files changes the verified tree, so the next `/flow-ship` asks for `/flow-verify` again. Put the formatter in the approved lint command (for example `prettier --check`) to avoid that.
 3. The flow keeps git trees that no ref holds, and `git gc` prunes them after `gc.pruneExpire` (two weeks by default). A feature left half done that long breaks; the only exit today is `/flow-off`. For a long flow, run `git config gc.pruneExpire 3.months.ago` before `/flow-setup` and `git config --unset gc.pruneExpire` after it.
-4. Some risks are accepted for this release: another process of the same user can write the flow record and the plugin; other loaded plugins are trusted; never load the project under flow as a plugin; `/flow-decide`, `/flow-retry` and `/flow-off` are not bound to an echo; a deep edit inside `node_modules` beyond the test runner goes unseen; and a program that forks a long-lived process on its own is not caught by the background guard.
+4. Some risks are accepted for this release: another process of the same user can write the flow record and the plugin; other loaded plugins are trusted; never load the project under flow as a plugin; `/flow-decide`, `/flow-retry` and `/flow-off` are not bound to an echo; a deep edit inside `node_modules` beyond the test runner goes unseen; and a program that forks a long-lived process on its own is not caught by the background guard. The agent can also change files git ignores and the flow does not hash, such as `node_modules`, whose `.bin` husky runs for your commits, and refs other than the flow branch (0.6.0 hashes ignored loadable files and watches the refs): after a flow, review `package.json` and the lockfile, reinstall the dependencies and look at the git hooks before your next commit or project script.
 
 ## 12. Exempt sessions for loop runners
 
@@ -457,7 +457,7 @@ Common situations:
 | A notice that sqlite3 is missing | Memory search still works, by a plain scan. Run the command the agent gives, or set `autoInstall` to `false`. See `.snagon/install.log`. |
 | No handoff appeared | The journal did not change, or the session was exempt. See `.snagon/handoff/handoff.log`. |
 | Reminders in the wrong language | Set `language` to `"en"` or `"vi"` in the config. |
-| `flow cannot start here yet:` after `/flow-setup` | The lines below it name each problem (no git repository, a detached HEAD, no remote, no test command, registry credentials, a plugin loaded from a writable folder, a settings key that loosens the sandbox). Fix them and run `/flow-setup` again. |
+| `flow cannot start here yet:` after `/flow-setup` | The lines below it name each problem (no git repository, a detached HEAD, no remote, no test command, registry credentials, a plugin loaded from a writable folder, a settings key that loosens the sandbox, no git on the filtered PATH or a git the agent could write, a dependency or build folder git tracks or does not ignore, a repository config or hooks folder that cannot be read). Fix them and run `/flow-setup` again. |
 | The card says `Blocked, NOT done: …` | The flow waits for you. Its last line lists the exits; see "When the flow is blocked" in section 11. |
 | A refusal that starts with `flow:` | A flow guard. Follow the hint in it, or let main ask you. |
 | A toast: a flow prompt was not delivered | The mod could not hand main its next prompt. Type `/flow-status` to go on. |
@@ -485,7 +485,7 @@ claude plugin test .
 claude plugin validate .
 ```
 
-`claude plugin test .` runs 545 tests in 39 files, among them a simulated Claude Code that drives a fake project through the flow (`tests/flow-drive.ts`, `tests/flow-fakes.ts`). Seven developer checks use the real tools the test runner does not have. Each needs Node.js; `sqlite.check.mjs` needs 23.6 or later:
+`claude plugin test .` runs 569 tests in 40 files, among them a simulated Claude Code that drives a fake project through the flow (`tests/flow-drive.ts`, `tests/flow-fakes.ts`). Eight developer checks use the real tools the test runner does not have. Each needs Node.js; `sqlite.check.mjs` needs 23.6 or later:
 
 ```
 node tests/sqlite.check.mjs        the real sqlite3 path
@@ -495,9 +495,11 @@ node tests/flow-code.check.mjs     the release code is read only by the pane ren
 node tests/flow-git.check.mjs      real git and sandbox-exec (macOS)
 node tests/flow-judge.check.mjs    the judge with real git, and one judged vitest run when FLOW_JUDGE_PROJECT is set
 node tests/vendor.check.mjs        the vendored agent-skills files against their lock
+node tests/safe-path.check.mjs     programs planted first on the PATH never run with the filtered PATH
+sh tests/tsc.sh <claude-code.d.ts> type-check against the engine's current API file (needs tsc)
 ```
 
-The flow was also run for real, in a fresh Claude Code session over a fixture project, with a script typing the owner's commands. Those evals cost real money (about 8 to 9 USD for one whole flow); how to run them and what they found is in [evals/flow/README.md](../evals/flow/README.md). Updating the vendored agent-skills methods follows [vendor-update.md](vendor-update.md).
+The flow was also run for real, in a fresh Claude Code session over a fixture project, with a script typing the owner's commands. Those evals cost real money (about 6 to 9 USD for one whole flow); how to run them and what they found is in [evals/flow/README.md](../evals/flow/README.md). Updating the vendored agent-skills methods follows [vendor-update.md](vendor-update.md).
 
 Type-check, after the mod has loaded once (Claude Code writes `.claude-plugin/types/`):
 

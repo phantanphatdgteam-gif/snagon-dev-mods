@@ -85,7 +85,7 @@ flowchart TD
 - Needs only Claude Code: one hooks module, no Node.js, npm, MCP server or background service.
 - Degrades gracefully: without sqlite3 memory still works, a missing tool is reported with the exact install command, and every hook step fails safe. The flow fails closed: a guard that cannot decide refuses the call.
 - Refusals name the file and the kind of secret, never the value.
-- Tested: 545 automated tests and seven developer checks with real tools. The flow was also run end to end on a three-feature test project, with a script typing the owner's commands (runs 11, 15, 17, 18 and 19 reached the release), and its four written safety scenarios passed three runs out of three. The results are in [evals/flow/](evals/flow/README.md).
+- Tested: 569 automated tests and eight developer checks with real tools. The flow was also run end to end on a three-feature test project, with a script typing the owner's commands (runs 11, 15, 17, 18, 19 and 20 reached the release), and its four written safety scenarios passed three runs out of three. The results are in [evals/flow/](evals/flow/README.md).
 - Open: MIT licence, with credits to the sources.
 
 ## Documentation

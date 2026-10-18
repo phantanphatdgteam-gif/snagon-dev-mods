@@ -41,7 +41,7 @@ snagon-dev-mods/
 ├── skills/                    64 skill, cùng flow-loop (quy tắc của flow)
 ├── agents/                    66 agent
 ├── commands/                  43 lệnh
-├── tests/                     545 test trong 39 file, bảy bước kiểm tra cho lập trình viên, dữ liệu mẫu
+├── tests/                     569 test trong 40 file, tám bước kiểm tra cho lập trình viên, tsc.sh, dữ liệu mẫu
 ├── evals/flow/                các bài chạy thật của flow: script chạy, kịch bản và kết quả
 ├── docs/                      guide.md, workflow.md, files.md, flow.md, vendor-update.md, vi/
 ├── README.md, README.vi.md    tổng quan bằng tiếng Anh và tiếng Việt
@@ -54,10 +54,10 @@ snagon-dev-mods/
 
 | File | Làm gì | Chạy hoặc được đọc khi nào |
 |------|--------|-----------------------------|
-| `.claude-plugin/plugin.json` | Manifest: tên `snagon-dev-mods`, phiên bản 0.5.3, mô tả, liên kết, giấy phép, đường dẫn hợp đồng trạng thái | Khi Claude Code nạp mod |
+| `.claude-plugin/plugin.json` | Manifest: tên `snagon-dev-mods`, phiên bản 0.5.4, mô tả, liên kết, giấy phép, đường dẫn hợp đồng trạng thái | Khi Claude Code nạp mod |
 | `.claude-plugin/marketplace.json` | Biến repository thành một marketplace có một plugin, nguồn `"./"` | Khi `/plugin marketplace add` và khi cài |
 | `.claude-plugin/types/` | Kiểu cho trình soạn thảo do Claude Code ghi; không nằm trong git | Khi mod được nạp |
-| `tsconfig.json` | Mở rộng các kiểu đó để `tsc -p .` kiểm tra được mã | Khi lập trình viên kiểm tra kiểu |
+| `tsconfig.json` | Mở rộng các kiểu đó để `tsc -p .` kiểm tra được mã; các kiểu này chỉ được làm mới khi engine nạp mod, nên `tests/tsc.sh` kiểm với bản hiện hành | Khi lập trình viên kiểm tra kiểu |
 
 ## Các file của module hook
 
@@ -101,6 +101,7 @@ Thứ tự theo một flow: phần mọi bước dùng chung, rồi thiết lậ
 | `hooks/flow-sources.ts` | Nguồn lệnh và mã của test runner, khóa lúc thiết lập, để bắt được khi thứ mà lệnh chạy bị đổi | Thiết lập, trước mỗi lần chạy judge |
 | `hooks/flow-baseline.ts` | S3 và S4: chạy mọi lệnh đã duyệt một lần trên dự án như hiện tại, echo baseline, nhận baseline đỏ theo kiểu không thêm lỗi mới | Sau lệnh thử, `/flow-approve baseline` |
 | `hooks/flow-git.ts` | Git cho flow, đã siết chặt (không cấu hình toàn cục, hook hay replace ref); chỉ lần push lúc phát hành dùng cấu hình của bạn, sau khi đã kiểm | Mọi lệnh git của flow |
+| `hooks/safe-path.ts` | PATH cho mọi chương trình mod chạy: bỏ các mục agent ghi được (trong dự án, thư mục tạm, chỗ sandbox hay cài đặt cho ghi, thư mục cache của trình quản lý gói), để một `git` hay `find` cài sẵn không bao giờ chạy; khung setup hiện kết quả | Lúc bắt đầu phiên, `/flow-setup`, mọi chương trình mod chạy |
 | `hooks/flow-plan.ts` | Phân tích và kiểm `docs/flow/plan.md`, băm nó cho lần duyệt, giữ khóa của tính năng qua các lần lập lại plan | P2, P3 |
 | `hooks/flow-planning.ts` | P1 ticket của planner, P2 các lượt trả lỗi, P3 lần duyệt chốt plan, file của nó, trần chi phí flow, rubric và định tuyến | `/flow-plan`, `/flow-approve plan` |
 | `hooks/flow-build.ts` | B1 và B2: ticket RED và các phép kiểm của nó, khóa test RED, ticket viết mã, giới hạn vòng | `/flow-build`, `flow_check` |
@@ -169,12 +170,14 @@ Lấy từ everything-claude-code 2.2.3 (MIT): chuyển sang ES module và bỏ 
 
 | File | Làm gì | Chạy hoặc được đọc khi nào |
 |------|--------|-----------------------------|
-| `tests/*.test.ts` (39 file, 545 test) | Các module harness (cổng, ý định git, bí mật, lõi bộ nhớ, nhật ký, bàn giao, chi phí, cấu hình, trình cài đặt, cách xưng hô), mọi module flow, và cả module với một Claude Code giả lập | `claude plugin test .` |
+| `tests/*.test.ts` (40 file, 569 test) | Các module harness (cổng, ý định git, bí mật, lõi bộ nhớ, nhật ký, bàn giao, chi phí, cấu hình, trình cài đặt, cách xưng hô), mọi module flow, và cả module với một Claude Code giả lập | `claude plugin test .` |
 | `tests/flow-drive.ts`, `tests/flow-fakes.ts` | Một host giả và một bộ điều khiển đưa một dự án đi qua flow như engine làm | Các test flow nhập |
 | `tests/fixtures/` | Kết quả và báo cáo thật của runner (vitest, jest, tsc, eslint) để kiểm các bộ đọc | Các test nhập |
 | `tests/sqlite.check.mjs`, `tests/install.check.mjs` | Kiểm tra cho lập trình viên với sqlite3 thật và script cài đặt thật | Chạy thủ công, cần Node.js |
 | `tests/flow-data.check.mjs`, `tests/flow-code.check.mjs`, `tests/vendor.check.mjs` | Kiểm dữ liệu flow, kiểm ai đọc mã phát hành, kiểm file vendor với file khóa | Chạy thủ công, cần Node.js |
 | `tests/flow-git.check.mjs`, `tests/flow-judge.check.mjs` | Kiểm với git thật và `sandbox-exec` (macOS) | Chạy thủ công, cần Node.js |
+| `tests/safe-path.check.mjs` | Kiểm rằng chương trình cài sẵn ở đầu PATH không bao giờ chạy với PATH đã lọc | Chạy thủ công, cần Node.js |
+| `tests/tsc.sh` | Kiểm kiểu mod với file API của engine, tsconfig đặt ngoài mod: `sh tests/tsc.sh <claude-code.d.ts>` | Chạy thủ công, cần `tsc` |
 | `evals/flow/run.sh`, `pty-drive.sh`, `scenarios.sh`, `metrics.mjs` | Bài chạy thật: một phiên thật trên dự án thử, một script gõ lệnh thay Chủ dự án, các kịch bản và số đo | Chạy thủ công; tốn tiền thật |
 | `evals/flow/README.md`, `dry-run.md`, `safety.md`, `happy-path.md` | Cách chạy, mỗi bài kiểm gì, và đã tìm ra gì | Người đọc |
 

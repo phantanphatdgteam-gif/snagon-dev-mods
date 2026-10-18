@@ -188,7 +188,7 @@ Dự án là dự án thử mà các bài eval của flow dùng: một thư vi�
 - F-03: add a new export `median(xs)` to the existing module `src/stats.ts` ...; tests in `tests/stats.test.ts`.
 ```
 
-Giờ và chi phí dưới đây là của lượt chạy thử 19 (2026-10-18; phiên chính chạy Opus 5.5, planner chạy Opus, các agent khác chạy Sonnet). Lượt đó chạy bản 0.5.2; bản 0.5.3 chỉ đổi cách xử lý khi main không chịu khởi động ticket, và gửi cho main ít lời nhắc ticket hơn.
+Giờ và chi phí dưới đây là của lượt chạy thử 19 (2026-10-18; phiên chính chạy Opus 5.5, planner chạy Opus, các agent khác chạy Sonnet). Lượt đó chạy bản 0.5.2; bản 0.5.3 chỉ đổi cách xử lý khi main không chịu khởi động ticket, và gửi cho main ít lời nhắc ticket hơn. Bản 0.5.4 đổi những gì setup kiểm và những gì judge được làm, không đổi các bước dưới đây; lượt chạy thử của nó (20) phát hành sau 13 phút, tốn 6,61 USD.
 
 ```mermaid
 sequenceDiagram

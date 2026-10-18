@@ -41,7 +41,7 @@ snagon-dev-mods/
 ├── skills/                    64 skills, plus flow-loop (the flow rules)
 ├── agents/                    66 agents
 ├── commands/                  43 commands
-├── tests/                     545 tests in 39 files, seven developer checks, fixtures
+├── tests/                     569 tests in 40 files, eight developer checks, tsc.sh, fixtures
 ├── evals/flow/                live evals of the flow: runner, scenarios and results
 ├── docs/                      guide.md, workflow.md, files.md, flow.md, vendor-update.md, vi/
 ├── README.md, README.vi.md    overview in English and Vietnamese
