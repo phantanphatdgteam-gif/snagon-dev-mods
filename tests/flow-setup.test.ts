@@ -43,6 +43,50 @@ describe('flow-setup: S1 detect', () => {
     expect(out.ok && out.draft.block.filesystem.denyRead).not.toContain('~/.claude/projects')
   })
 
+  test('the echo names the git the mod runs and the PATH entries it skips (NK-02)', async () => {
+    const w = world({ pathDropped: [`${ROOT}/node_modules/.bin`, '.'] })
+    const out = await detectSetup(w.host, ARGS)
+    if (!out.ok) throw new Error(out.refusals.join('\n'))
+    expect(out.draft.git).toBe('/usr/local/bin/git')
+    expect(out.draft.pathDropped).toEqual([`${ROOT}/node_modules/.bin`, '.'])
+    const lines = setupEcho(w.host, out.draft).lines.join('\n')
+    expect(lines).toContain('git: /usr/local/bin/git')
+    expect(lines).toContain(`${ROOT}/node_modules/.bin, .`)
+    expect(lines).toContain('PATH of the mod\'s own programs and of the judge: /usr/bin:/bin')
+    expect(out.draft.path).toBe('/usr/bin:/bin')
+    expect(setupEcho(world().host, { ...out.draft, pathDropped: [] }).lines.join('\n')).not.toContain('leave out')
+  })
+
+  test('a git that resolves into the project, a temp folder or a settings write place is refused, naming where it lands (NK-02)', async () => {
+    const merged = { permissions: { additionalDirectories: ['~/shared'] } }
+    for (const target of [`${ROOT}/bin/git`, '/private/tmp/g/git', `${HOME}/shared/git`]) {
+      const out = await detectSetup(world({ links: { '/usr/local/bin/git': target }, files: { [target]: '#!/bin/sh\n' }, settings: { merged } }).host, ARGS)
+      expect(out.ok).toBe(false)
+      expect(out.ok ? '' : out.refusals.join('\n')).toContain(target)
+    }
+  })
+
+  test('no git on the filtered PATH is refused, naming that PATH (NK-02)', async () => {
+    const out = await detectSetup(world({ missing: ['git'] }).host, ARGS)
+    expect(out.ok ? '' : out.refusals.join('\n')).toContain('no git on the PATH the mod uses (/usr/bin:/bin)')
+  })
+
+  test('a dependency or build folder git tracks, or with files git neither tracks nor ignores, is refused; ignored or absent passes (NK-05)', async () => {
+    const ls = (d: string): string => `ls-files -t -c -o --exclude-standard --directory --no-empty-directory -- ${d}`
+    const out = await detectSetup(world({ gitOut: { [ls('node_modules')]: '? node_modules/\n', [ls('dist')]: 'H dist/a.js\n' } }).host, ARGS)
+    const text = out.ok ? '' : out.refusals.join('\n')
+    expect(text).toContain('node_modules holds files git neither tracks nor ignores')
+    expect(text).toContain('dist is tracked by git')
+    expect(text).not.toContain('build holds')
+    expect(text).not.toContain('coverage')
+    expect((await detectSetup(world().host, ARGS)).ok).toBe(true)
+  })
+
+  test('a repository config or hooks folder that cannot be read refuses S1 with the reason (GAP-054-11)', async () => {
+    const out = await detectSetup(world({ gitOut: { 'config --type=path --get core.hooksPath': { exitCode: 2, stdout: '', stderr: 'bad config', isStdoutTruncated: false } } }).host, ARGS)
+    expect(out.ok ? '' : out.refusals.join('\n')).toContain('the repository config and git hooks could not be read (git config core.hooksPath failed: bad config)')
+  })
+
   test('an override sets a command, none drops one, and tools=+ and mcp=+ extend the lists', async () => {
     const out = await detectSetup(world().host, { overrides: { test: 'npx jest --ci', lint: 'none' }, tools: ['WebFetch'], mcp: ['mcp__gh__search'] })
     if (!out.ok) throw new Error(out.refusals.join('\n'))

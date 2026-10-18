@@ -38,6 +38,8 @@ export type FakeOpts = {
   tree?: string
   /** What write-tree answers for HEAD alone (no `add -A` since the read-tree); the worktree's tree when unset. */
   headTree?: string
+  /** The host PATH entries the filtered PATH dropped (NK-02). */
+  pathDropped?: string[]
 }
 /** The git arguments of a hardened call: after `git`, the `-c name=value` pairs dropped. */
 export function gitArgs(argv: readonly string[]): string[] | null {
@@ -95,7 +97,8 @@ export function fakeHost(opts: FakeOpts = {}) {
         if (cmd === '/bin/sh' && a[1]?.startsWith('env |')) return done((opts.envText ?? 'PATH=/usr/bin:/bin\nHOME=/Users/u\n').split('\n').map(l => l.split('=')[0]).filter(Boolean).join('\n'))
         if (cmd === '/bin/sh' && a[1]?.startsWith('command -v')) return (opts.missing ?? []).includes(a[3] ?? '') ? done('', 1) : done(`/usr/local/bin/${a[3]}\n`)
         if (cmd === '/usr/bin/uname') return done(`${opts.os ?? 'Darwin'}\n`)
-        if (cmd === '/usr/bin/stat') { const p = a[a.length - 1] ?? '', r = resolve(p); return r && files.has(r) ? done(`${opts.linkCount?.[r] ?? 1}\n`) : done('', 1, `stat: ${p}: No such file or directory`) }
+        if (cmd === '/usr/bin/readlink') return done('', 1) // no links among the fake's files
+        if (cmd === '/usr/bin/stat') { const p = a[a.length - 1] ?? '', r = resolve(p); return r && files.has(r) ? done(a.includes('%HT') ? 'Regular File\n' : `${opts.linkCount?.[r] ?? 1}\n`) : done('', 1, `stat: ${p}: No such file or directory`) }
         if (argv.includes('rev-parse')) return opts.git === false ? done('', 128, 'fatal: not a git repository') : done(`${ROOT}\n${ROOT}/.git\n${ROOT}/.git\n${ROOT}/.git/index\n`)
         if (argv.includes('symbolic-ref')) return opts.branch === '' ? done('', 1) : done(`${opts.branch ?? 'main'}\n`)
         if (g?.[0] === 'ls-files') return done('')
@@ -142,7 +145,7 @@ export function fakeHost(opts: FakeOpts = {}) {
       const local = (): Settings => { const t = files.get(`${ROOT}/.claude/settings.local.json`); return t ? JSON.parse(t) as Settings : {} }
       return source ? opts.settings?.[source] ?? (source === 'local' ? local() : {}) : opts.settings?.merged ?? local()
     },
-    env: { PATH: '/usr/bin:/bin', TMPDIR: '/private/var/folders/t' },
+    env: { PATH: '/usr/bin:/bin', TMPDIR: '/private/var/folders/t' }, pathDropped: opts.pathDropped ?? [],
     runLong: async (argv, init) => host.io.run(argv, init),
   }
   return {

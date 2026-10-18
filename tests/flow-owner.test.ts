@@ -21,12 +21,13 @@ describe('owner commands: parsing and origin', () => {
     expect(parseOwner('flow-retry', 'F-02')).toEqual({ name: 'flow-retry', scope: 'F-02' })
     expect(parseOwner('flow-waive', 'check:lint  the old warnings are known ')).toEqual({ name: 'flow-waive', target: 'check:lint', reason: 'the old warnings are known' })
     expect(parseOwner('flow-reject', 'plan')).toEqual({ name: 'flow-reject', what: 'plan' })
-    expect(parseOwner('flow-setup', 'test="npx vitest run" tools=+WebFetch mcp=+github')).toEqual({ name: 'flow-setup', overrides: { test: 'npx vitest run' }, tools: ['WebFetch'], mcp: ['github'] })
+    expect(parseOwner('flow-setup', 'test="npx vitest run" tools=+WebFetch mcp=+mcp__github__search_code mcp=+mcp__context7__query-docs')).toEqual({ name: 'flow-setup', overrides: { test: 'npx vitest run' }, tools: ['WebFetch'], mcp: ['mcp__github__search_code', 'mcp__context7__query-docs'] })
     expect(parseOwner('flow-ship', '')).toEqual({ name: 'flow-ship' })
     const bad: Array<[string, string]> = [
       ['flow-approve', 'release 0a1b2c3d'], ['flow-approve', 'plan 0A1B2C3D'], ['flow-approve', 'plan 0a1b2c3'], ['flow-approve', 'all 0a1b2c3d'], ['flow-approve', 'plan 0a1b2c3d extra'],
       ['flow-approve', 'release 0a1b2c3d K7P2Q'], ['flow-decide', 'R-3 maybe'], ['flow-retry', 'everything'], ['flow-waive', 'FL-2'], ['flow-waive', 'rm -rf it'],
       ['flow-reject', 'setup'], ['flow-ship', 'now'], ['flow-setup', 'deploy=rm'], ['flow-setup', 'tools=WebFetch'], ['flow-nope', ''],
+      ['flow-setup', 'mcp=+github'], ['flow-setup', 'mcp=+mcp__github'], ['flow-setup', 'mcp=+mcp____x'], // NK-06: the guard matches full tool names only
     ]
     for (const [c, a] of bad) expect([c, a, 'error' in parseOwner(c, a)]).toEqual([c, a, true])
   })

@@ -39,6 +39,15 @@ async function out(io: Io, cwd: string, args: readonly string[], o: { env?: Reco
 export const hardenedRead = (io: Io, cwd: string): GitRead => async args => {
   try { const r = await git(io, cwd, args); return { ok: r.exitCode === 0, out: r.stdout, truncated: r.isStdoutTruncated === true } } catch { return { ok: false, out: '' } }
 }
+/** The owner's own git config read locally (no network; `config` runs no hook), as git applies it to the owner's commands. */
+const userConfig = (io: Io, cwd: string, args: readonly string[]): Promise<RunResult> =>
+  io.run([...unset(REDIRECT, {}), 'git', '-c', 'core.fsmonitor=false', 'config', ...args], { cwd, timeoutMs: GIT_TIMEOUT_MS, env: { GIT_TERMINAL_PROMPT: '0' } })
+/** Entries walked in the core.hooksPath folder before H_cfg gives up (fail closed, bounded time). */
+const HOOKS_PATH_CAP = 5000
+/** How long naming what a link, FIFO or device in a hooks folder leads to may take. */
+const STAT_TIMEOUT_MS = 5_000
+/** `stat -f %HT`'s word for a plain file. */
+const REGULAR = 'Regular File'
 /** A network git call (ls-remote, push): the user's config for credentials and ssh, never prompts, no hooks. */
 function netGit(io: Io, cwd: string, args: readonly string[]): Promise<RunResult> {
   // No local or file transport: git does not pass -c to a local receive-pack, so the target repository's hooks would run.
@@ -125,9 +134,22 @@ export async function cfgHash(io: Io, root: string, p: GitPaths, home: string): 
   const take = async (path: string): Promise<void> => {
     try { parts[path] = hashOf(await io.read(path)) } catch (err) { if (await io.exists(path)) throw new Error(`cannot read ${path}: ${String(err)}`); parts[path] = 'absent' }
   }
+  // a link, FIFO or device is never opened, as a read could block: what is not known to be a plain file is named by
+  // `stat -L` first; a plain file (also through a link) is read, a missing one recorded absent, anything else recorded by
+  // its type; a link also by where it points. Returns the type.
+  const entry = async (path: string, kind: string): Promise<string> => {
+    if (kind === 'file') { await take(path); return REGULAR }
+    const st = await io.run(['/usr/bin/stat', '-L', '-f', '%HT', path], { timeoutMs: STAT_TIMEOUT_MS })
+    const type = st.exitCode === 0 ? st.stdout.trim() : ''
+    if (type === REGULAR || type === '') await take(path) // '': missing, or a link that leads nowhere
+    else parts[path] = type
+    const link = await io.run(['/usr/bin/readlink', path], { timeoutMs: STAT_TIMEOUT_MS })
+    if (link.exitCode === 0 && link.stdout.trim()) parts[path] = `${parts[path]} -> ${link.stdout.trim()}`
+    return type
+  }
   const includes = async (cfg: string, depth: number): Promise<void> => {
-    await take(cfg)
-    if (depth >= INCLUDE_DEPTH || parts[cfg] === 'absent') return
+    // only a plain file goes on to `git config --file`, which would block on a FIFO as a read does
+    if ((await entry(cfg, '')) !== REGULAR || depth >= INCLUDE_DEPTH) return
     const dir = cfg.slice(0, cfg.lastIndexOf('/'))
     for (const [, v] of pairs(await out(io, root, ['config', '--no-includes', '--null', '--file', cfg, '--get-regexp', '^include(if\\..*)?\\.path$'], { noneIs: 1 }))) {
       const target = v.startsWith('~/') ? `${home}${v.slice(1)}` : v.startsWith('/') ? v : `${dir}/${v}`
@@ -137,14 +159,54 @@ export async function cfgHash(io: Io, root: string, p: GitPaths, home: string): 
   }
   const walk = async (dir: string): Promise<void> => {
     if (!(await io.exists(dir))) { parts[dir] = 'absent'; return }
-    for (const item of await io.list(dir)) await (item.kind === 'dir' ? walk(`${dir}/${item.name}`) : take(`${dir}/${item.name}`))
+    for (const item of await io.list(dir)) await (item.kind === 'dir' ? walk(`${dir}/${item.name}`) : entry(`${dir}/${item.name}`, item.kind))
   }
   for (const cfg of new Set([`${p.commonDir}/config`, `${p.commonDir}/config.worktree`, `${p.gitDir}/config.worktree`])) await includes(cfg, 0)
   await walk(`${p.commonDir}/hooks`)
   await walk(`${p.commonDir}/info`)
-  for (const f of ['.claude/settings.json', '.claude/settings.local.json', '.mcp.json']) await take(`${root}/${f}`)
+  // NK-01: git runs the hooks in core.hooksPath for the owner's own commits, outside any sandbox; husky 9 keeps them in
+  // .husky/_, which git ignores, so neither flowTree nor the ignored-file set sees an edit there
+  const hp = await userConfig(io, p.top, ['--type=path', '--get', 'core.hooksPath']) // git expands ~ and ~user
+  if (hp.exitCode > 1) throw new Error(`git config core.hooksPath failed: ${hp.stderr.trim().slice(0, 200)}`)
+  const hooksPath = hp.stdout.trim()
+  parts['core.hooksPath'] = hooksPath || 'unset' // always there: parts without it were frozen before 0.5.4 (offCfg)
+  if (hooksPath) {
+    const dir = hooksPath.startsWith('/') ? hooksPath : `${p.top}/${hooksPath}`
+    let seen = 0
+    const walkHooks = async (d: string, items: Awaited<ReturnType<Io['list']>>): Promise<void> => {
+      for (const item of items) {
+        if ((seen += 1) > HOOKS_PATH_CAP) throw new Error(`the hooks folder ${dir} (core.hooksPath) holds more than ${HOOKS_PATH_CAP} entries`)
+        const at = `${d}/${item.name}`
+        await (item.kind === 'dir' ? walkHooks(at, await io.list(at)) : entry(at, item.kind))
+      }
+    }
+    if (!(await io.exists(dir))) parts[dir] = 'absent'
+    else {
+      const items = await io.list(dir).catch(() => null)
+      await (items === null ? entry(dir, 'other') : walkHooks(dir, items)) // not a folder (/dev/null): recorded by its type
+    }
+  }
+  for (const f of ['.claude/settings.json', '.claude/settings.local.json', '.mcp.json']) await entry(`${root}/${f}`, '')
   return { hash: hashOf(Object.keys(parts).sort().map(k => `${k}=${parts[k]}`).join('\n')), parts, includes: included }
 }
+
+/** The H_cfg parts that differ from what S2b froze (`frozen`: `hCfg` and the `cfg:<part>` keys), sorted; null when the
+ * hash is the same. Empty when only the hash differs. */
+export async function cfgDrift(io: Io, root: string, home: string, frozen: Readonly<Record<string, string>>): Promise<string[] | null> {
+  return partsDrift(frozen, await cfgHash(io, root, await gitPaths(io, root), home))
+}
+/** cfgDrift for a cfgHash already taken. */
+export function partsDrift(frozen: Readonly<Record<string, string>>, cfg: { hash: string; parts: Readonly<Record<string, string>> }): string[] | null {
+  if (cfg.hash === frozen.hCfg) return null
+  const was = Object.fromEntries(Object.entries(frozen).filter(([k]) => k.startsWith('cfg:')).map(([k, v]) => [k.slice(4), v]))
+  return [...new Set([...Object.keys(was), ...Object.keys(cfg.parts)])].filter(k => was[k] !== cfg.parts[k]).sort()
+}
+/** The H_cfg parts a setup approval binds (GAP-054-9): all but the settings file S2b writes, which the probe checks itself. */
+export const seenHash = (parts: Readonly<Record<string, string>>, root: string): string =>
+  hashOf(Object.keys(parts).filter(k => k !== `${root}/.claude/settings.local.json`).sort().map(k => `${k}=${parts[k]}`).join('\n'))
+
+/** Why cfgHash failed, for the owner's `cfg.unreadable` text (S1, flow_check, the probe, /flow-off). */
+export const cfgDetail = (err: unknown): string => (err instanceof Error ? err.message : String(err)).slice(0, 300)
 
 /** Why a push URL cannot be used: not https/ssh/git (or scp-like ssh), or a user name, token or password in it. */
 export function urlProblem(url: string): string | null {

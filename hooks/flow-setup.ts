@@ -2,17 +2,18 @@
 // .claude/settings.local.json, the remote and branch a release goes to, and every reason flow cannot start here, all at
 // once; then the echo the owner approves (its hash binds what S2 freezes) and the redacted draft view.
 import { dataDir, hashOf } from './session'
-import { git, gitPaths, pushFacts, urlProblem, type GitPaths, type PushFacts } from './flow-git'
+import { cfgDetail, cfgHash, git, gitPaths, partsDrift, pushFacts, seenHash, urlProblem, writableIncludes, type GitPaths, type PushFacts } from './flow-git'
+import { settingsPlaces, writePlaces } from './safe-path'
 import { commandSources, scriptNames } from './flow-sources'
 import { authEnvNames, detectManagers, effectiveOf, flowDenyRead, npmrcHasAuth, pluginRootRefusals, postText, proposeBlock, sandboxRefusals, type Layer, type SandboxBlock, type Settings } from './flow-sandbox'
 import { screenMcpRefusals } from './flow-guard'
 import { viewText } from './flow-pack'
 import { findSecrets } from './secrets'
-import { branchOf, pluginRoots, realOf, staticsOf, type FlowHost } from './flow-host'
+import { activeView, branchOf, pluginRoots, realOf, staticsOf, type FlowHost } from './flow-host'
 import type { EchoContent } from './flow-owner'
 import type { FlowCommand } from './flow-state'
 import { PROVISIONAL_USD } from './flow-turn'
-import { TYPESCRIPT } from '../flow/data/stacks'
+import { STACKS, TYPESCRIPT } from '../flow/data/stacks'
 import { ROUTING } from '../flow/data/routing'
 import { CAPS } from '../flow/data/phases'
 import { fill } from '../flow/data/templates'
@@ -25,6 +26,12 @@ export type SetupDraft = {
   sources: Record<string, string>; block: SandboxBlock; pre: string | null; post: string; layers: string[]
   remote: string; branch: string; facts: PushFacts; allowTools: string[]; allowMcp: string[]; journalDir: string
   secretNames: string[]; writeYourself: boolean; pluginProject: boolean; caps: Record<CapScope, Caps>; sessionCap: number
+  /** The filtered PATH S2 freezes for the judge, the git the mod runs (its real path) and the host PATH entries left out
+   * (NK-02); the approval binds all three. */
+  path: string; git: string; pathDropped: string[]
+  /** A re-freeze: the repository config and git hooks that differ from the flow's freeze or were not recorded then;
+   * `cfgSeen`: the hash of the H_cfg parts as S1 read them (seenHash), which the approval binds and the probe checks. */
+  cfgDrift: string[]; cfgSeen: string
 }
 export type Detected = { ok: true; draft: SetupDraft } | { ok: false; refusals: string[] }
 type Say = (key: string, vars?: Readonly<Record<string, string | number>>) => void
@@ -161,6 +168,41 @@ async function journalPart(h: FlowHost, root: string, caseFold: boolean, say: Sa
   if ((await git(h.io, root, ['check-ignore', '-q', '--', dir])).exitCode !== 0) say('setup.journal', { dir })
 }
 
+/** The git the mod runs outside the sandbox, found on the filtered PATH (NK-02): its real path for the echo, refused when
+ * it lies where the agent's Bash could write it, with the same places the PATH filter uses (the project, the temp
+ * folders, the settings' write places, every stack's caches, the proposed block), as a link may lead. */
+async function gitPart(h: FlowHost, root: string, block: SandboxBlock, say: Say): Promise<string> {
+  const found = (await h.io.run(['/bin/sh', '-c', 'command -v "$1"', 'sh', 'git'])).stdout.trim()
+  if (!found) { say('setup.gitMissing', { path: h.env.PATH, dropped: (h.pathDropped ?? []).join(', ') || '—' }); return '' }
+  const real = (await h.stat(found))?.realPath ?? found
+  const extra = [...settingsPlaces(await h.settings()), ...STACKS.flatMap(s => s.packageManagers.flatMap(m => m.cacheDirs)), ...block.filesystem.allowWrite]
+  const places = await writePlaces({ root, tmp: h.env.TMPDIR, home: h.home, extra }, async p => (await h.stat(p))?.realPath)
+  if (writableIncludes([found, real], places).length) say('setup.gitUnsafe', { path: real })
+  return real
+}
+
+/** NK-05, GAP-054-13: the stack's dependency and build-output folders (those IGNORED_SKIP in flow-baseline.ts leaves
+ * out); one git tracks, or one holding files git neither tracks nor ignores, goes into flowTree and the release commit
+ * (`git add -A`). */
+const OUTPUT_DIRS = [...TYPESCRIPT.dependencyDirs, ...TYPESCRIPT.buildOutputs.filter(x => x.endsWith('/'))].map(d => d.replace(/\/+$/, ''))
+async function outputsPart(h: FlowHost, root: string, say: Say): Promise<void> {
+  for (const dir of OUTPUT_DIRS) {
+    // `-t` tags each path: `?` git neither tracks nor ignores it, any other letter a tracked file; nothing: ignored or absent
+    const r = await git(h.io, root, ['ls-files', '-t', '-c', '-o', '--exclude-standard', '--directory', '--no-empty-directory', '--', dir])
+    if (r.exitCode !== 0) say('blocked.couldNotRun', { detail: `git ls-files -- ${dir}: ${r.stderr.trim().slice(0, 200)}` })
+    else if (/^[^?\n]/m.test(r.stdout)) say('setup.tracked', { dir })
+    else if (r.stdout.trim()) say('setup.notIgnored', { dir })
+  }
+}
+
+/** A re-freeze approves the repository config and git hooks as S1 read them (`cfg`; the approval binds them), so the
+ * echo names what differs from the flow's freeze; a flow frozen before 0.5.4 never recorded the hooks path, so those
+ * parts are named too. */
+async function driftPart(h: FlowHost, cfg: { hash: string; parts: Readonly<Record<string, string>> }): Promise<string[]> {
+  const view = await activeView(h)
+  return view.mode === 'on' && view.record.frozen.hCfg !== undefined ? partsDrift(view.record.frozen, cfg) ?? [] : []
+}
+
 /** S1: everything /flow-setup proposes, or every reason flow cannot start here, in the owner's words. */
 export async function detectSetup(h: FlowHost, args: SetupArgs): Promise<Detected> {
   const why: string[] = []
@@ -176,15 +218,19 @@ export async function detectSetup(h: FlowHost, args: SetupArgs): Promise<Detecte
   const screen = screenMcpRefusals(allowMcp)
   if (screen.length) say('setup.screen', { names: screen.join(', ') })
   await journalPart(h, root, s.caseFold, say)
-  if (why.length || !release.facts) return { ok: false, refusals: why }
+  await outputsPart(h, root, say)
+  const gitPath = await gitPart(h, root, sandbox.block, say)
+  const cfg = await cfgHash(h.io, root, p, h.home).catch((err: unknown) => { say('blocked.couldNotRun', { detail: fill(h.language, 'cfg.unreadable', { detail: cfgDetail(err) }) }); return null })
+  if (why.length || !release.facts || !cfg) return { ok: false, refusals: why }
   const sources = (await commandSources(h.io, p, project.commands.map(c => c.argv))).hashes
+  const drift = await driftPart(h, cfg)
   return {
     ok: true,
     draft: {
       root, stack: TYPESCRIPT.id, ...project, sources, ...sandbox, remote: release.remote, branch: release.branch, facts: release.facts,
       allowTools: unique([...ROUTING.allowTools, ...args.tools]), allowMcp, journalDir: h.journalDir, ...env,
       writeYourself: findSecrets(sandbox.post).length > 0, pluginProject: await h.io.exists(`${root}/.claude-plugin/plugin.json`),
-      caps: { ...CAPS }, sessionCap: PROVISIONAL_USD.session,
+      caps: { ...CAPS }, sessionCap: PROVISIONAL_USD.session, path: h.env.PATH, git: gitPath, pathDropped: [...(h.pathDropped ?? [])], cfgDrift: drift, cfgSeen: seenHash(cfg.parts, root),
     },
   }
 }
@@ -208,6 +254,9 @@ export function setupEcho(h: Pick<FlowHost, 'language' | 'address'>, d: SetupDra
     t('echo.mcp', { mcp: d.allowMcp.join(', ') || '—' }),
     t('echo.journal', { dir: d.journalDir }),
     t('echo.remote', { url: d.facts.url, branch: d.branch }),
+    t('echo.git', { path: d.git || '—' }), t('echo.path', { path: d.path }),
+    ...(d.pathDropped.length ? [t('echo.pathDropped', { entries: d.pathDropped.join(', ') })] : []),
+    ...(d.cfgDrift.length ? [t('echo.cfgDrift', { files: [...d.cfgDrift.slice(0, 8), ...(d.cfgDrift.length > 8 ? [`+${d.cfgDrift.length - 8}`] : [])].join(', ') })] : []),
     ...(d.secretNames.length ? [t('echo.secrets', { names: d.secretNames.join(', ') })] : []),
     t('echo.caps', { pe: d.caps.plan.e, fe: d.caps.feature.e, fr: d.caps.feature.r, fd: d.caps.feature.d, ve: d.caps.verify.e, vd: d.caps.verify.d, cap: d.sessionCap }),
     ...(d.writeYourself ? [t('echo.writeYourself')] : []),

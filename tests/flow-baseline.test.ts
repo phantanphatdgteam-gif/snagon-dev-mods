@@ -1,8 +1,8 @@
 import { describe, expect, test } from 'claude-code/testing'
-import { flowCheck } from '../hooks/flow-check'
+import { flowCheck, modChange } from '../hooks/flow-check'
 import { PROBE_COMMAND } from '../hooks/flow-sandbox'
 import { sha256 } from '../hooks/flow-review'
-import { HOME, MOD_ROOT, ROOT } from './flow-fakes'
+import { HOME, MOD_ROOT, ROOT, recordFile } from './flow-fakes'
 import { approved, latest, LOCAL, run, RUN, toS3, world, writeLocal, type W } from './flow-drive'
 
 const SHA = 'a'.repeat(40)
@@ -14,7 +14,7 @@ const check = async (w: W) => JSON.parse(await flowCheck(w.host)) as { next: str
 
 describe('flow-baseline: S3 through flow_check', () => {
   test('all green: each command runs in the judge sandbox, the baseline is saved and frozen, and the flow waits for /flow-plan', async () => {
-    const w = world({ gitOut: { ...HEAD }, judge: { test: { exit: 0, report: GREEN } }, files: { [`${ROOT}/node_modules/.cache/x`]: 'c' } })
+    const w = world({ gitOut: { ...HEAD, 'check-ignore -q -- node_modules': '' }, judge: { test: { exit: 0, report: GREEN } }, files: { [`${ROOT}/node_modules/.cache/x`]: 'c' } })
     expect((await toS3(w))?.task).toBe('S3')
     expect((await check(w)).next).toContain('/flow-plan')
     const r = latest(w)
@@ -108,8 +108,36 @@ describe('flow-baseline: what every flow_check checks first', () => {
     await toS3(w)
     w.files.set(`${MOD_ROOT}/hooks/register.ts`, 'changed')
     await check(w)
-    expect(latest(w)?.blocked?.reason).toBe('tampered')
+    expect(latest(w)?.blocked).toEqual({ reason: 'tampered', vars: { file: MOD_ROOT } })
     expect(judgedRuns(w)).toEqual([])
+  })
+
+  test('a mod update still blocks as tampered, and the card names the version change and /flow-setup (NK-04)', async () => {
+    const w = world({ gitOut: { ...HEAD }, files: { [`${MOD_ROOT}/.claude-plugin/plugin.json`]: '{"name":"snagon-dev-mods","version":"0.5.3"}' } })
+    expect((await toS3(w))?.frozen['plugin.version']).toBe('0.5.3')
+    w.files.set(`${MOD_ROOT}/.claude-plugin/plugin.json`, '{"name":"snagon-dev-mods","version":"0.5.4"}')
+    await check(w)
+    const b = latest(w)?.blocked
+    expect(b?.reason).toBe('tampered')
+    expect(b?.vars.file).toContain('0.5.3 → 0.5.4')
+    expect(b?.vars.file).toContain('/flow-setup')
+    expect(judgedRuns(w)).toEqual([])
+  })
+
+  test('a PATH frozen before 0.5.4 (the host PATH as it was) is filtered again for the judge (NK-02)', async () => {
+    const w = world({ gitOut: { ...HEAD }, judge: { test: { exit: 0, report: GREEN } } })
+    const r0 = await toS3(w)
+    if (!r0) throw new Error('no record at S3')
+    for (const [k, v] of Object.entries(recordFile({ ...r0, frozen: { ...r0.frozen, 'env.PATH': `${ROOT}/node_modules/.bin:/usr/bin:/bin` } }))) w.files.set(k, v)
+    await check(w)
+    expect(judgedRuns(w)[0]?.slice(0, 3)).toEqual(['/usr/bin/env', '-i', 'PATH=/usr/bin:/bin'])
+  })
+
+  test('modChange: the version line, a record frozen with no version, and no line when the version is the same (NK-04)', () => {
+    expect(modChange(undefined, '0.5.4', 'en')).toContain('version not recorded → 0.5.4')
+    expect(modChange('0.5.3', '0.5.4', 'vi')).toContain('0.5.3 → 0.5.4')
+    expect(modChange('0.5.4', '0.5.4', 'en')).toBeNull()
+    expect(modChange(undefined, '', 'en')).toBeNull()
   })
 
   test('sandbox drift blocks and marks the sandbox changed', async () => {

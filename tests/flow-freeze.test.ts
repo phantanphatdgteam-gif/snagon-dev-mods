@@ -9,7 +9,7 @@ import { canonical } from '../hooks/flow-owner'
 import { sha256 } from '../hooks/flow-review'
 import { spawnHook } from '../hooks/flow-ticket'
 import type { FlowRecord } from '../hooks/flow-state'
-import { activeRecord, fakeHost, recordFile, HOME, ROOT, SESSION_ID, type FakeOpts } from './flow-fakes'
+import { activeRecord, fakeHost, recordFile, HOME, MOD_ROOT, ROOT, SESSION_ID, type FakeOpts } from './flow-fakes'
 
 const PKG = JSON.stringify({ scripts: { test: 'vitest run', lint: 'eslint .' } })
 const GIT = { 'config --get branch.main.remote': 'origin\n', 'remote get-url --push origin': 'https://github.com/o/r.git\n' }
@@ -83,6 +83,7 @@ describe('flow-freeze: S2 approval', () => {
     expect(r?.setup?.commands.map(c => c.id)).toEqual(['test', 'lint'])
     expect(r?.approvals.map(a => [a.kind, a.origin])).toEqual([['setup', 'composer']])
     expect(Object.keys(r?.frozen ?? {})).toEqual(expect.arrayContaining(['post', 'plugin', 'runner', 'remote.url', 'remote.rules', 'remote.global', 'env.PATH']))
+    expect(r?.frozen['env.PATH']).toBe('/usr/bin:/bin') // the approved draft's filtered PATH (NK-02)
     expect(r?.frozen.sandbox).toBeUndefined()
     expect(r?.lock?.sessionId).toBe(SESSION_ID)
     const s = w.session().value
@@ -231,6 +232,34 @@ describe('flow-freeze: S2b and the sandbox probe', () => {
     expect(r?.blocked).toBeUndefined()
     expect(r?.frozen.sandbox).toBeUndefined()
     expect(r?.approvals.map(a => a.kind)).toEqual(['plan', 'setup'])
+  })
+
+  test('a hook planted between the setup approval and the probe blocks as tampered instead of being frozen (GAP-054-9)', async () => {
+    const w = world({ gitOut: { 'config --type=path --get core.hooksPath': '.husky/_\n' }, files: { [`${ROOT}/.husky/_/h`]: '#!/bin/sh\n' } })
+    await approved(w)
+    w.files.set(`${ROOT}/.husky/_/h`, '#!/bin/sh\necho planted\n')
+    await writeLocal(w, w.session().value?.s2b?.post ?? '')
+    await probe(w, REFUSED)
+    const r = latest(w)
+    expect(r?.blocked?.reason).toBe('tampered')
+    expect(r?.blocked?.vars.file).toContain('changed after the setup was approved')
+    expect(r?.frozen.hCfg).toBeUndefined()
+  })
+
+  test('a 0.5.3 flow blocked by the mod update: /flow-setup freezes the new version, the probe freezes H_cfg again with the hooks path (NK-04, NK-01)', async () => {
+    const old = activeRecord({ blocked: { reason: 'tampered', vars: { file: MOD_ROOT } }, frozen: { plugin: 'old', post: 'old', sandbox: '{}', hCfg: 'old' } })
+    const w = world({ files: { ...recordFile(old), [`${MOD_ROOT}/.claude-plugin/plugin.json`]: '{"version":"0.5.4"}' }, gitOut: { 'config --type=path --get core.hooksPath': '.husky/_\n' } })
+    await approved(w)
+    expect(latest(w)?.blocked).toBeUndefined()
+    expect(latest(w)?.frozen['plugin.version']).toBe('0.5.4')
+    expect(latest(w)?.frozen.plugin).not.toBe('old')
+    await writeLocal(w, w.session().value?.s2b?.post ?? '')
+    expect(await probe(w, REFUSED)).toBeNull()
+    const r = latest(w)
+    expect(r?.blocked).toBeUndefined()
+    expect(r?.frozen.hCfg).toMatch(/^[0-9a-f]{16}$/)
+    expect(r?.frozen['cfg:core.hooksPath']).toBe('.husky/_')
+    expect(r?.frozen[`cfg:${ROOT}/.husky/_`]).toBe('absent')
   })
 })
 

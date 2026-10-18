@@ -40,6 +40,8 @@ change is blocked as `tampered` at its next `flow_check` (the plugin integrity h
    owner's word and its name in `ROUTING.vendored` (`flow/data/routing.ts`).
 7. **Check.** From the mod folder: `node tests/vendor.check.mjs` (the hashes, the file set, the headings plan §8.1
    cites, B1's testing sections, no protocol token in the text tickets quote), then `claude plugin test .`,
-   `claude plugin validate .` and the other `tests/*.check.mjs`. When upstream renamed a heading that plan §8.1 or
+   `claude plugin validate .`, `sh tests/tsc.sh <claude-code.d.ts>` (the API file plugin-authoring names as it loads;
+   `tsc -p .` reads a copy of the types the engine refreshes only when it loads the mod) and the other
+   `tests/*.check.mjs`. When upstream renamed a heading that plan §8.1 or
    `RED_TESTING` cites, the check fails: the new name goes into the plan, `flow/data/routing.ts` and the check only with
    the owner's word.

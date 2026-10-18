@@ -54,10 +54,10 @@ snagon-dev-mods/
 
 | File | What it does | When it runs or is read |
 |------|--------------|-------------------------|
-| `.claude-plugin/plugin.json` | Manifest: name `snagon-dev-mods`, version 0.5.3, description, links, licence, state contract path | When Claude Code loads the mod |
+| `.claude-plugin/plugin.json` | Manifest: name `snagon-dev-mods`, version 0.5.4, description, links, licence, state contract path | When Claude Code loads the mod |
 | `.claude-plugin/marketplace.json` | Makes the repository a marketplace with one plugin, source `"./"` | On `/plugin marketplace add` and install |
 | `.claude-plugin/types/` | Editor types written by Claude Code; not in git | When the mod loads |
-| `tsconfig.json` | Extends those types so `tsc -p .` can check the code | When a developer type-checks |
+| `tsconfig.json` | Extends those types so `tsc -p .` can check the code; they are refreshed only when the engine loads the mod, so `tests/tsc.sh` checks against the current ones | When a developer type-checks |
 
 ## Hooks module files
 
@@ -101,6 +101,7 @@ The order follows a flow: what every step uses, then setup, plan, build, verify 
 | `hooks/flow-sources.ts` | The command sources and the test runner's code, frozen at setup, so a change to what the commands run is caught | Setup, before each judged run |
 | `hooks/flow-baseline.ts` | S3 and S4: every approved command once on the project as it is, the baseline echo, a red baseline accepted as no-new-failures | After the probe, `/flow-approve baseline` |
 | `hooks/flow-git.ts` | Git for the flow, hardened (no global config, hooks or replace refs); only the release push keeps your config, after a check | Every git call of the flow |
+| `hooks/safe-path.ts` | The PATH every program the mod starts gets: entries the agent could write (in the project, a temp folder, a sandbox or settings write place, a package cache) are left out, so a planted `git` or `find` never runs; the setup echo shows the result | Session start, `/flow-setup`, every program the mod runs |
 | `hooks/flow-plan.ts` | Parses and lints `docs/flow/plan.md`, hashes it for the approval, keys the features across re-plans | P2, P3 |
 | `hooks/flow-planning.ts` | P1 the planner ticket, P2 the lint round trips, P3 the approval that freezes the plan, its files, the flow cost cap, the rubrics and the routing | `/flow-plan`, `/flow-approve plan` |
 | `hooks/flow-build.ts` | B1 and B2: the RED ticket and its checks, the RED freeze, the author ticket, the round caps | `/flow-build`, `flow_check` |
@@ -169,12 +170,14 @@ From everything-claude-code 2.2.3 (MIT): turned into ES modules with the Node-on
 
 | File | What it does | When it runs or is read |
 |------|--------------|-------------------------|
-| `tests/*.test.ts` (39 files, 545 tests) | The harness modules (gate, git intent, secrets, memory core, journal, handoff, usage, config, installer, address), every flow module, and the whole module with a simulated Claude Code | `claude plugin test .` |
+| `tests/*.test.ts` (40 files, 569 tests) | The harness modules (gate, git intent, secrets, memory core, journal, handoff, usage, config, installer, address), every flow module, and the whole module with a simulated Claude Code | `claude plugin test .` |
 | `tests/flow-drive.ts`, `tests/flow-fakes.ts` | A fake host and a driver that play a project through the flow as the engine would | Imported by the flow tests |
 | `tests/fixtures/` | Real runner output and reports (vitest, jest, tsc, eslint) the parsers are tested against | Imported by the tests |
 | `tests/sqlite.check.mjs`, `tests/install.check.mjs` | Developer checks with real sqlite3 and the real install script | Run by hand, needs Node.js |
 | `tests/flow-data.check.mjs`, `tests/flow-code.check.mjs`, `tests/vendor.check.mjs` | Developer checks of the flow data, of who reads the release code, and of the vendored files against their lock | Run by hand, needs Node.js |
 | `tests/flow-git.check.mjs`, `tests/flow-judge.check.mjs` | Developer checks with real git and `sandbox-exec` (macOS) | Run by hand, needs Node.js |
+| `tests/safe-path.check.mjs` | Developer check that programs planted first on the PATH never run with the filtered PATH | Run by hand, needs Node.js |
+| `tests/tsc.sh` | Type-checks the mod against the engine's API file with a tsconfig outside the mod: `sh tests/tsc.sh <claude-code.d.ts>` | Run by hand, needs `tsc` |
 | `evals/flow/run.sh`, `pty-drive.sh`, `scenarios.sh`, `metrics.mjs` | The live evals: a real session over a fixture project, a script typing the owner's commands, the scenarios and the measurements | Run by hand; they cost real money |
 | `evals/flow/README.md`, `dry-run.md`, `safety.md`, `happy-path.md` | How the evals run, what each checks, and what they found | Read by people |
 

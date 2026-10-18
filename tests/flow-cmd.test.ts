@@ -77,11 +77,31 @@ describe('flow-cmd: /flow-off', () => {
     rotateCode()
     w.setSession({ ...emptySession(), tickets: { 'T-1': 'x' }, pending: { release: await release() } })
     const out = await run(w, 'flow-off')
-    expect(out.text).toBe(`flow ${FLOW_ID} is off. Its files in .snagon/flow stay as history.`)
+    expect(out.text).toBe(`flow ${FLOW_ID} is off. Its files in .snagon/flow stay as history.\nBefore your next git commit or project script: look at what the flow changed in package.json and the lockfile, reinstall the dependencies from the lockfile (npm: rm -rf node_modules && npm ci), and look at the git hooks; the agent could change files there that git ignores.`)
     expect(w.files.has(`${flowDir(HOME)}/${FLOW_ID}.end`)).toBe(true)
     expect(w.session().value?.tickets).toEqual({})
     expect(w.session().value?.pending).toEqual({})
     expect(paneCode()).toBeNull()
+  })
+
+  test('a flow ended while a git hook differs from what was frozen says which; it still ends (NK-01)', async () => {
+    const hooks = `${ROOT}/.husky/_`
+    const same = Object.fromEntries(['.git/config', '.git/config.worktree', '.git/hooks', '.git/info', '.claude/settings.json', '.claude/settings.local.json', '.mcp.json'].map(k => [`cfg:${ROOT}/${k}`, 'absent']))
+    const w = world({ record: { frozen: { hCfg: 'frozen-before', ...same, 'cfg:core.hooksPath': '.husky/_', [`cfg:${hooks}/h`]: 'old' } }, files: { [`${hooks}/h`]: '#!/bin/sh\necho planted\n' }, gitOut: { 'config --type=path --get core.hooksPath': '.husky/_\n' } })
+    const out = await run(w, 'flow-off')
+    expect(out.text).toContain(`flow ${FLOW_ID} is off`)
+    expect(out.text).toContain(`git hooks changed: ${hooks}/h.`)
+    expect(w.files.has(`${flowDir(HOME)}/${FLOW_ID}.end`)).toBe(true)
+  })
+
+  test('a hooks check that fails says it could not compare, not that something changed; the flow still ends (NK-01)', async () => {
+    const w = world({ record: { frozen: { hCfg: 'frozen-before', 'plugin.version': '0.5.4' } }, gitOut: { 'config --type=path --get core.hooksPath': { exitCode: 2, stdout: '', stderr: 'bad config', isStdoutTruncated: false } } })
+    const out = await run(w, 'flow-off')
+    expect(out.text).toContain(`flow ${FLOW_ID} is off`)
+    expect(out.text).toContain('could not be compared with the freeze (git config core.hooksPath failed: bad config)')
+    expect(out.text).not.toContain('git hooks changed')
+    expect(out.text).toContain('npm ci')
+    expect(w.files.has(`${flowDir(HOME)}/${FLOW_ID}.end`)).toBe(true)
   })
 
   test('with two active flows it names the one to end', async () => {

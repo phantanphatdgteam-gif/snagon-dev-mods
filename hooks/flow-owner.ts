@@ -23,7 +23,7 @@ export type OwnerCmd =
   | { name: 'flow-reject'; what: 'plan' }
 
 export const USAGE: Readonly<Record<OwnerName, string>> = {
-  'flow-setup': '/flow-setup [test|lint|typecheck|build="<argv>"] [tools=+<Tool>] [mcp=+<server>]',
+  'flow-setup': '/flow-setup [test|lint|typecheck|build="<argv>"] [tools=+<Tool>] [mcp=+mcp__<server>__<tool>]',
   'flow-plan': '/flow-plan [<what to build>]', 'flow-build': '/flow-build', 'flow-verify': '/flow-verify', 'flow-ship': '/flow-ship', 'flow-off': '/flow-off [<id8>]', 'flow-status': '/flow-status',
   'flow-approve': '/flow-approve setup|baseline|plan|waive <hash8> · /flow-approve release <hash8> <code>',
   'flow-decide': '/flow-decide <X-n> fix|reject|followup',
@@ -32,6 +32,8 @@ export const USAGE: Readonly<Record<OwnerName, string>> = {
   'flow-reject': '/flow-reject plan',
 }
 const HASH8 = /^[0-9a-f]{8}$/, CODE = /^[A-Za-z0-9]{6}$/, CMD_ID = /^(?:test|lint|typecheck|build)$/
+/** `mcp=+` names one MCP tool in full, as the guard matches it (flow-guard.ts mcpVerdict): mcp__<server>__<tool> (NK-06). */
+const MCP_TOOL = /^mcp__[\w.-]*[^\W_][\w.-]*__[\w.:-]+$/
 /** Words of the arguments; `key="a b"` keeps its quoted value as one word. */
 const words = (args: string): string[] => [...args.matchAll(/([^\s=]+=)?"([^"]*)"|\S+/g)].map(m => (m[2] !== undefined ? `${m[1] ?? ''}${m[2]}` : m[0]))
 
@@ -60,7 +62,7 @@ export function parseOwner(command: string, args: string): OwnerCmd | { error: s
       for (const word of w) {
         const [key = '', value = ''] = [word.slice(0, word.indexOf('=')), word.slice(word.indexOf('=') + 1)]
         if (!word.includes('=') || !value) return bad
-        if (key === 'tools' || key === 'mcp') { if (!/^\+[\w.:-]+$/.test(value)) return bad; out[key].push(value.slice(1)) }
+        if (key === 'tools' || key === 'mcp') { if (!/^\+[\w.:-]+$/.test(value) || (key === 'mcp' && !MCP_TOOL.test(value.slice(1)))) return bad; out[key].push(value.slice(1)) }
         else if (CMD_ID.test(key)) out.overrides[key] = value
         else return bad
       }

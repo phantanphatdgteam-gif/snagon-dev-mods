@@ -26,6 +26,8 @@ import { onReply } from './flow-reviewing'
 import { ECHO_PANE, OWNER_ORIGINS } from './flow-owner'
 import { addressFor, fill } from '../flow/data/templates'
 import { beat, flowUsageLine, turnEnd } from './flow-spend'
+import { filteredPath, settingsPlaces, PATH_UNCHECKED, SYSTEM_PATH } from './safe-path'
+import { STACKS } from '../flow/data/stacks'
 
 type Host = CoreEngineInterface
 
@@ -41,19 +43,32 @@ const FLOW = { plugin: 'snagon-dev-mods', key: 'flow' } as const
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
 const JOURNAL_IMPORT_DAYS = 7
 
+let safeEnv: Promise<{ path: string; dropped: string[] }> | undefined
+/** The PATH every process of the mod gets (safe-path.ts, NK-02), worked out once per session and again at /flow-setup;
+ * when it cannot be (settings unreadable too), the system folders with a marker the setup echo shows, and the next call
+ * tries again: never the host PATH as it is. */
+const safeEnvOf = ($: Host): Promise<{ path: string; dropped: string[] }> => (safeEnv ??= (async () => {
+  const realOf = async (p: string): Promise<string | undefined> => (await $.fs.stat(p, { resolve: true }).catch(() => null))?.realPath
+  const merged: unknown = await $.settings.read()
+  const caches = STACKS.flatMap(s => s.packageManagers.flatMap(m => m.cacheDirs))
+  const places = { root: await $.session.root(), tmp: (await $.env.get('TMPDIR')) ?? '', home: (await $.env.get('HOME')) ?? '', extra: [...settingsPlaces(merged), ...caches] }
+  return filteredPath((await $.env.get('PATH')) ?? '', places, realOf)
+})().catch(() => { safeEnv = undefined; return { path: SYSTEM_PATH, dropped: [PATH_UNCHECKED] } }))
+
 function ioOf($: Host): Io {
   return {
     read: path => $.fs.read(path),
     write: (path, text) => $.fs.write(path, text),
     exists: path => $.fs.exists(path),
     list: path => $.fs.list(path),
-    run: (argv, init) => $.process.run(argv, init),
+    // a bare program name goes through env, which looks it up on the child's (filtered) PATH whatever the engine does
+    run: async (argv, init) => $.process.run(argv[0]?.includes('/') ? argv : ['/usr/bin/env', ...argv], { ...init, env: { ...init?.env, PATH: (await safeEnvOf($)).path } }),
     now: () => $.clock.now(),
     pluginRoot: $.plugin.root,
   }
 }
 
-type FlowEnv = Pick<FlowHost, 'sessionId' | 'claudeDir' | 'pluginDirs' | 'env'>
+type FlowEnv = Pick<FlowHost, 'sessionId' | 'claudeDir' | 'pluginDirs' | 'env' | 'pathDropped'>
 let flowEnv: Promise<FlowEnv> | undefined
 let beatTimer: { cancel(): void } | undefined // F7: the flow lock's heartbeat every 60 s (a reload replaces it)
 /** The flow modules' view of `$` (flow-host.ts): what never changes in a session is read once. */
@@ -62,8 +77,9 @@ async function hostOf($: Host): Promise<FlowHost> {
   flowEnv ??= (async () => {
     const lang = await $.env.get('LANG'), tz = await $.env.get('TZ'), xdg = await $.env.get('XDG_CONFIG_HOME'), gGlobal = await $.env.get('GIT_CONFIG_GLOBAL'), gSystem = await $.env.get('GIT_CONFIG_SYSTEM')
     const opt = (k: string, v: string | undefined): Record<string, string> => (v ? { [k]: v } : {})
-    const env = { PATH: (await $.env.get('PATH')) ?? '', TMPDIR: (await $.env.get('TMPDIR')) ?? '', ...opt('LANG', lang), ...opt('TZ', tz), ...opt('XDG_CONFIG_HOME', xdg), ...opt('GIT_CONFIG_GLOBAL', gGlobal), ...opt('GIT_CONFIG_SYSTEM', gSystem) }
-    return { sessionId: await $.session.id(), claudeDir: (await $.env.get('CLAUDE_CONFIG_DIR')) || `${f.home}/.claude`, pluginDirs: (await $.env.get('CLAUDE_CODE_PLUGIN_DIRS')) ?? '', env }
+    const safe = await safeEnvOf($)
+    const env = { PATH: safe.path, TMPDIR: (await $.env.get('TMPDIR')) ?? '', ...opt('LANG', lang), ...opt('TZ', tz), ...opt('XDG_CONFIG_HOME', xdg), ...opt('GIT_CONFIG_GLOBAL', gGlobal), ...opt('GIT_CONFIG_SYSTEM', gSystem) }
+    return { sessionId: await $.session.id(), claudeDir: (await $.env.get('CLAUDE_CONFIG_DIR')) || `${f.home}/.claude`, pluginDirs: (await $.env.get('CLAUDE_CODE_PLUGIN_DIRS')) ?? '', env, pathDropped: safe.dropped }
   })()
     .catch(err => { flowEnv = undefined; throw err })
   return {
@@ -73,7 +89,7 @@ async function hostOf($: Host): Promise<FlowHost> {
     writeSession: async (value, ifVersion) => (await $.state.set(FLOW, value, { ifVersion })).isSet,
     open: pane => $.ui.open(pane), submit: async text => { submitLater($, text) }, usd: async () => (await $.session.usage()).cost?.usd,
     journalDir: f.config.journalDir, settings: async source => (await $.settings.read(source ? { source } : undefined)) as FlowSettings,
-    runLong: (argv, init) => collectRun($.process.spawn({ argv, ...(init.cwd ? { cwd: init.cwd } : {}) }), (ms, fn) => $.clock.after(ms, fn), init.timeoutMs),
+    runLong: async (argv, init) => collectRun($.process.spawn({ argv, ...(init.cwd ? { cwd: init.cwd } : {}), env: { PATH: (await safeEnvOf($)).path } }), (ms, fn) => $.clock.after(ms, fn), init.timeoutMs),
     journal: async line => { const day = await localNow(io); await appendText(io, `${await journalDir(io, f.root, f.config.journalDir)}/${day.date}.md`, `- ${line}\n`) },
   }
 }
@@ -315,6 +331,7 @@ export const register: Register = on => {
   // flow owner commands (plan §2.5, F37): the release code is masked before anything else, so the command line never keeps it
   on('command.run', async ($, e, next) => {
     if (!e.command.startsWith('flow-')) return next(e)
+    if (e.command === 'flow-setup') { safeEnv = undefined; flowEnv = undefined } // the PATH filter reads the settings as they are now
     const args = maskedArgs(e.command, e.args)
     if (args !== undefined) await next({ ...e, args })
     return { text: (await ownerCommand(await hostOf($), e)).text }

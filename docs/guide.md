@@ -1,6 +1,6 @@
 # snagon-dev-mods user guide
 
-Version 0.5.3. Back to the [README](../README.md).
+Version 0.5.4. Back to the [README](../README.md).
 
 Contents: installing and updating, `/snagon-setup`, project memory, safety gate, session journal, compaction, handoff, cost and context notices, path rules, bundled skills/agents/commands, the flow, exempt sessions, troubleshooting, development.
 

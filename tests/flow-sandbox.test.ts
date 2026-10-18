@@ -150,7 +150,7 @@ describe('flow sandbox setup', () => {
     expect(profile).toContain('\n(deny mach-lookup) (allow mach-lookup (global-name "com.apple.audio.systemsoundserver")')
     expect(profile).not.toContain('launchservicesd')
     expect(profile).not.toContain('com.apple.lsd')
-    for (const rule of ['(deny lsopen)', '(deny job-creation)', '(deny mach-register)', '(deny signal) (allow signal (target same-sandbox))', '(deny file-ioctl) (allow file-ioctl (literal "/dev/null")']) expect(profile).toContain(`\n${rule}`)
+    for (const rule of ['(deny lsopen)', '(deny job-creation)', '(deny mach-register)', '(deny signal) (allow signal (target same-sandbox))', '(deny file-ioctl) (allow file-ioctl (literal "/dev/null")', '(deny file-link)']) expect(profile).toContain(`\n${rule}`)
     expect(profile).toContain('\n(deny file-read* file-write* (regex #"^/dev/(tty|pty|ptmx|ttys|cu\\.|console)"))')
     expect(profile).toContain('/\\.[vV][sS][cC][oO][dD][eE](/|$)')
     expect(profile.trimEnd().endsWith('(deny network*)')).toBe(true)

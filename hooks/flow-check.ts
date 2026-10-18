@@ -1,11 +1,13 @@
 // flow_check (plan v7.1 §4.6): main's one call that moves the flow on. It runs only where the flow waits for a check, after
 // this session's sandbox probe; every call first checks the plugin's own files, the sandbox and the command sources
 // against what S2 froze (F30), and any difference blocks the flow before anything runs. It answers as flow_status does.
-import { pluginIntegrity } from './flow-judge'
-import { cfgHash, git, gitPaths } from './flow-git'
+import { pluginIntegrity, pluginVersion } from './flow-judge'
+import { cfgDetail, cfgDrift, git, gitPaths } from './flow-git'
 import { cmdSourceVerdict } from './flow-sources'
 import { hashOf } from './session'
 import { TYPESCRIPT } from '../flow/data/stacks'
+import { fill } from '../flow/data/templates'
+import type { Language } from '../flow/data/types'
 import { activeView, blockFlow, dropView, mutateSession, session, type FlowHost } from './flow-host'
 import { updateRecord, type Blocked, type FlowRecord } from './flow-state'
 import { flowStatus, TICKET_PROMPT, whereNow } from './flow-turn'
@@ -19,8 +21,18 @@ import { recoverLost, settleRunning } from './flow-ticket'
 import { reviewStep } from './flow-reviewing'
 import { verifyStep } from './flow-verify'
 
+/** The tampered card's words for a mod update (NK-04): the version S2 froze (none before 0.5.4, GAP-054-6) and the one
+ * now; null when it did not change or cannot be read, so a file changed within one version reads as before. */
+export function modChange(from: string | undefined, to: string, lang: Language): string | null {
+  if (!to || from === to) return null
+  return fill(lang, 'tampered.mod', { from: from || fill(lang, 'tampered.unknownVersion', {}), to })
+}
+
 async function integrity(h: FlowHost, r: FlowRecord): Promise<Blocked | null> {
-  if ((await pluginIntegrity(h.io, h.io.pluginRoot)) !== r.frozen.plugin) return { reason: 'tampered', vars: { file: h.io.pluginRoot } }
+  if ((await pluginIntegrity(h.io, h.io.pluginRoot)) !== r.frozen.plugin) {
+    const update = modChange(r.frozen['plugin.version'], await pluginVersion(h.io, h.io.pluginRoot), h.language)
+    return { reason: 'tampered', vars: { file: update ? `${h.io.pluginRoot} (${update})` : h.io.pluginRoot } }
+  }
   if ((await sandboxProblems(h, r)).length) {
     await mutateSession(h, s => ({ ...s, sandbox: 'changed' }))
     return { reason: 'sandboxMismatch', vars: {} }
@@ -61,11 +73,9 @@ async function cmdSrcCheck(h: FlowHost, r: FlowRecord): Promise<Blocked | null> 
 /** H_cfg (§5.1): the repository config, hooks, info files and project settings as frozen after the probe; the changed
  * names when they differ. */
 async function cfgChanged(h: FlowHost, r: FlowRecord): Promise<Blocked | null> {
-  const cfg = await cfgHash(h.io, r.root, await gitPaths(h.io, r.root), h.home)
-  if (cfg.hash === r.frozen.hCfg) return null
-  const was = Object.fromEntries(Object.entries(r.frozen).filter(([k]) => k.startsWith('cfg:')).map(([k, v]) => [k.slice(4), v]))
-  const changed = [...new Set([...Object.keys(was), ...Object.keys(cfg.parts)])].filter(k => was[k] !== cfg.parts[k]).sort()
-  return { reason: 'tampered', vars: { file: changed.slice(0, 5).join(', ') || 'the repository config' } }
+  let changed: string[] | null
+  try { changed = await cfgDrift(h.io, r.root, h.home, r.frozen) } catch (err) { return { reason: 'couldNotRun', vars: { detail: fill(h.language, 'cfg.unreadable', { detail: cfgDetail(err) }) } } }
+  return changed === null ? null : { reason: 'tampered', vars: { file: changed.slice(0, 5).join(', ') || 'the repository config' } }
 }
 
 /** B3 and B4 hand over within one flow_check: a green judge opens the review; a fix needs the judge before the delta. */

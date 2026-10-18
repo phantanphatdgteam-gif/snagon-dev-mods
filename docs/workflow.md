@@ -188,7 +188,7 @@ The project is the one the flow evals use: a small TypeScript library with `sum`
 - F-03: add a new export `median(xs)` to the existing module `src/stats.ts` ...; tests in `tests/stats.test.ts`.
 ```
 
-The times and costs below are dry run 19 (2026-10-18; main on Opus 5.5, the planner on Opus, the other agents on Sonnet). It ran 0.5.2; 0.5.3 changed only what happens when main will not start a ticket, and it sends main fewer ticket prompts.
+The times and costs below are dry run 19 (2026-10-18; main on Opus 5.5, the planner on Opus, the other agents on Sonnet). It ran 0.5.2; 0.5.3 changed only what happens when main will not start a ticket, and it sends main fewer ticket prompts. 0.5.4 changed what setup checks and what the judge may do, not these steps; its dry run (20) released in 13 minutes for $6.61.
 
 ```mermaid
 sequenceDiagram

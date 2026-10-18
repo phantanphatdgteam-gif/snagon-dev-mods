@@ -4,8 +4,8 @@
 // on: it turns the sandbox on for this session and, the first time, freezes the effective sandbox the engine reports.
 import type { FlowSetupArgs } from '../types'
 import { fill } from '../flow/data/templates'
-import { cfgHash, gitPaths } from './flow-git'
-import { pluginIntegrity } from './flow-judge'
+import { cfgDetail, cfgHash, gitPaths, seenHash } from './flow-git'
+import { pluginIntegrity, pluginVersion } from './flow-judge'
 import { runnerHash } from './flow-sources'
 import { CONTROL_ARGV, effectiveOf, PROBE_COMMAND, probeShowsSandbox, sandboxRefusals, type Layer, type Settings } from './flow-sandbox'
 import { canonical, dropEcho, makeEcho, refusalText, showEcho, type Origin } from './flow-owner'
@@ -16,8 +16,9 @@ import { detectSetup, setupEcho, writeDraftView, LOCAL_SETTINGS, type SetupDraft
 
 /** The npm package that holds each runner, for the runner hash. */
 const RUNNER_PACKAGE: Readonly<Record<string, string>> = { tsc: 'typescript' }
-/** Frozen keys that come from the setup: replaced by a re-freeze (the sandbox and H_cfg again after the probe). */
-const SETUP_KEY = /^(?:post|plugin|runner|remote\.|env\.|src:|cfg:|sandbox$|hCfg$)/
+/** Frozen keys that come from the setup: replaced by a re-freeze (the sandbox after the probe). H_cfg is not: it stays as
+ * it was until the probe freezes it again, so /flow-off never compares against an empty freeze meanwhile. */
+const SETUP_KEY = /^(?:post|plugin|runner|remote\.|env\.|src:|sandbox$)/
 const LAYERS: readonly Layer[] = ['user', 'project', 'local', 'flag', 'policy']
 
 // Agent-facing prompts (English): what main does next in S2b.
@@ -62,10 +63,11 @@ async function freezeOf(h: FlowHost, d: SetupDraft): Promise<Record<string, stri
   const p = await gitPaths(h.io, d.root)
   return {
     post: await sha256(canonical(JSON.parse(d.post))),
-    plugin: await pluginIntegrity(h.io, h.io.pluginRoot),
+    plugin: await pluginIntegrity(h.io, h.io.pluginRoot), 'plugin.version': await pluginVersion(h.io, h.io.pluginRoot),
     runner: await runnerHash(h.io, p.top, unique(d.commands.map(c => RUNNER_PACKAGE[c.runner] ?? c.runner))),
     'remote.url': d.facts.url, 'remote.rules': d.facts.urlRules, 'remote.global': d.facts.globalKeys, 'remote.keys': d.facts.keyNames.join('\n'),
-    'env.PATH': h.env.PATH,
+    'env.PATH': d.path || h.env.PATH, // the filtered PATH the owner approved (NK-02)
+    cfgSeen: d.cfgSeen, // the H_cfg parts the approval binds; the probe freezes them only if they are still so
     ...Object.fromEntries(Object.entries(d.sources).map(([k, v]) => [`src:${k}`, v])),
   }
 }
@@ -159,9 +161,21 @@ async function afterProbe(h: FlowHost, r: FlowRecord, out: unknown): Promise<voi
     return
   }
   if (r.frozen.sandbox === undefined) {
-    const merged = await h.settings(), cfg = await cfgHash(h.io, r.root, await gitPaths(h.io, r.root), h.home)
+    const merged = await h.settings()
+    let cfg: Awaited<ReturnType<typeof cfgHash>>
+    try { cfg = await cfgHash(h.io, r.root, await gitPaths(h.io, r.root), h.home) } catch (err) {
+      await blockFlow(h, r.flowId, { reason: 'couldNotRun', vars: { detail: fill(h.language, 'cfg.unreadable', { detail: cfgDetail(err) }) } })
+      return
+    }
+    // GAP-054-9: freeze what the owner approved, never what main's S2b turn may have planted since
+    if (r.frozen.cfgSeen !== undefined && seenHash(cfg.parts, r.root) !== r.frozen.cfgSeen) {
+      await blockFlow(h, r.flowId, { reason: 'tampered', vars: { file: fill(h.language, 'cfg.sinceApproval', {}) } })
+      return
+    }
     const parts = Object.fromEntries(Object.entries(cfg.parts).map(([k, v]) => [`cfg:${k}`, v]))
-    settled(await updateRecord(h.io, h.home, r.flowId, h.sessionId, x => ({ ...x, frozen: { ...x.frozen, sandbox: canonical(effectiveOf(merged)), hCfg: cfg.hash, ...parts }, ...(x.phase === 'setup' && x.task === 'S2b' ? { task: 'S3' } : {}) })))
+    // an earlier freeze's parts go now: a re-freeze kept them until the probe, so /flow-off could compare meanwhile
+    const kept = (f: Readonly<Record<string, string>>): Record<string, string> => Object.fromEntries(Object.entries(f).filter(([k]) => !k.startsWith('cfg:')))
+    settled(await updateRecord(h.io, h.home, r.flowId, h.sessionId, x => ({ ...x, frozen: { ...kept(x.frozen), sandbox: canonical(effectiveOf(merged)), hCfg: cfg.hash, ...parts }, ...(x.phase === 'setup' && x.task === 'S2b' ? { task: 'S3' } : {}) })))
     if (r.phase === 'setup') await h.submit(CHECK_PROMPT)
   }
   await mutateSession(h, s => ({ ...s, sandbox: 'on' }))

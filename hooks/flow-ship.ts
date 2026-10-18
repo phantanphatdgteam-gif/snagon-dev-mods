@@ -142,5 +142,5 @@ export async function applyRelease(h: FlowHost, a: Approval): Promise<string> {
   dropView()
   await mutateSession(h, () => emptySession())
   if (!ended.ok) throw new Error(`flow: pushed, but the record could not be ended (${ended.reason})`)
-  return fill(h.language, 'ship.done', { head: res.head.slice(0, 12), branch: branchOfRecord(r), url: r.frozen['remote.url'] ?? '' })
+  return `${fill(h.language, 'ship.done', { head: res.head.slice(0, 12), branch: branchOfRecord(r), url: r.frozen['remote.url'] ?? '' })}\n${fill(h.language, 'end.careful', {})}`
 }

@@ -47,8 +47,11 @@ export type FlowHost = {
   journalDir: string
   /** `$.settings.read`: one source as loaded, or the merge with no source. */
   settings(source?: Layer): Promise<Settings>
-  /** What a judged run's environment keeps (plan §5.1): PATH (frozen at S2), the temp folder, language and time zone. */
+  /** What a judged run's environment keeps (plan §5.1): PATH (the filtered one of safe-path.ts, frozen at S2), the temp
+   * folder, language and time zone. */
   env: { PATH: string; TMPDIR: string; LANG?: string; TZ?: string; XDG_CONFIG_HOME?: string; GIT_CONFIG_GLOBAL?: string; GIT_CONFIG_SYSTEM?: string }
+  /** The host PATH entries `env.PATH` leaves out because the agent's Bash could write them (NK-02); the setup echo shows them. */
+  pathDropped?: readonly string[]
   /** A long command (a judged run): killed at `timeoutMs` (it then throws) or when the person interrupts (F30). */
   runLong(argv: string[], init: { cwd?: string; timeoutMs: number }): Promise<RunResult>
 }

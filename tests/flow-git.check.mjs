@@ -73,6 +73,29 @@ try {
   check('H_cfg follows include.path into the included file', c3.hash !== c4.hash && join(HOME, 'inc.gitconfig') in c4.parts)
   put(join(A, '.claude/settings.json'), '{"hooks":{}}\n')
   check('H_cfg covers the project Claude settings', (await G.cfgHash(io, A, P, HOME)).hash !== c4.hash)
+  // NK-01: husky 9 points core.hooksPath at .husky/_, which it ignores itself; git runs those files for the owner's commits
+  sh(A, 'config', 'core.hooksPath', '.husky/_'); put(join(A, '.husky/_/.gitignore'), '*'); put(join(A, '.husky/_/h'), '#!/bin/sh\n'); put(join(A, '.husky/_/pre-commit'), '#!/bin/sh\n. "$(dirname "$0")/h"\n')
+  const k0 = await G.cfgHash(io, A, P, HOME); put(join(A, '.husky/_/h'), '#!/bin/sh\necho planted\n'); const k1 = await G.cfgHash(io, A, P, HOME)
+  check('H_cfg covers the core.hooksPath folder though git ignores it (husky 9 .husky/_) and names the file', k1.hash !== k0.hash && k1.parts[join(A, '.husky/_/h')] !== k0.parts[join(A, '.husky/_/h')])
+  sh(A, 'config', 'core.hooksPath', '/dev/null')
+  check('a hooksPath that is not a folder (/dev/null) is taken as it is, not an error', (await G.cfgHash(io, A, P, HOME)).hash !== k1.hash)
+  sh(A, 'config', 'core.hooksPath', '.husky/_')
+  const target = join(dirname(A), 'hook-target.sh'), hk = name => join(A, '.husky/_', name)
+  writeFileSync(target, '#!/bin/sh\n'); symlinkSync(target, hk('pre-push')); spawnSync('/usr/bin/mkfifo', [hk('pipe')]); symlinkSync(join(A, '.husky'), hk('up'))
+  const l0 = await G.cfgHash(io, A, P, HOME); writeFileSync(target, '#!/bin/sh\necho planted\n'); const l1 = await G.cfgHash(io, A, P, HOME); rmSync(target)
+  check('in the hooks folder a link to a file is read through; a FIFO and a link to a folder are named, never opened',
+    l1.parts[hk('pre-push')] !== l0.parts[hk('pre-push')] && l0.parts[hk('pipe')] === 'Fifo File' && l0.parts[hk('up')] === `Directory -> ${join(A, '.husky')}`,
+    JSON.stringify([l0.parts[hk('pipe')], l0.parts[hk('up')], l0.parts[hk('pre-push')]]))
+  sh(A, 'config', '--unset', 'core.hooksPath')
+  const globalText = readFileSync(process.env.GIT_CONFIG_GLOBAL, 'utf8')
+  writeFileSync(process.env.GIT_CONFIG_GLOBAL, `${globalText}[core]\n\thooksPath = .githooks\n`); put(join(A, '.githooks/pre-commit'), '#!/bin/sh\n')
+  const g1 = await G.cfgHash(io, A, P, HOME)
+  check('a relative hooksPath from the user\'s global config is read against the worktree top', join(A, '.githooks/pre-commit') in g1.parts)
+  writeFileSync(process.env.GIT_CONFIG_GLOBAL, `${globalText}[core]\n\thooksPath = many\n`); mkdirSync(join(A, 'many'))
+  for (let i = 0; i <= 5000; i += 1) writeFileSync(join(A, 'many', `f${i}`), '')
+  const capped = await G.cfgHash(io, A, P, HOME).then(() => '', e => String(e))
+  writeFileSync(process.env.GIT_CONFIG_GLOBAL, globalText); for (const d of ['.husky', '.githooks', 'many']) rmSync(join(A, d), { recursive: true })
+  check('a hooks folder over the cap is an error that names the cap', /5000/.test(capped), capped)
 
   check('the flow tree still works once .snagon is ignored (it always is in a real project)', (await G.flowTree(io, P, 'worktree', 'g1')) === (await G.flowTree(io, P, 'worktree', 'g2')))
   const U = join(base, 'unborn'); mkdirSync(U); sh(U, 'init', '-q'); put(join(U, 'a.txt'), 'a\n')
@@ -210,6 +233,13 @@ try {
     const wrote = Object.entries(writes).filter(([, c]) => judge('/bin/sh', '-c', c).status === 0).map(([k]) => k)
     if (existsSync(outside)) rmSync(outside)
     check('judge: .git/config, .claude/ and the home folder are not writable', wrote.length === 0, wrote.join(', '))
+    // macOS already refuses a link to a file the profile does not let the process write; (deny file-link) refuses the rest (NK-03)
+    const control = judgeWith(profileOf([]).replace('(deny file-link)\n', ''), ['/bin/sh', '-c', 'ln src/judged.txt hl-ctl'])
+    check('control: without (deny file-link) a file in the root can be hard-linked', control.status === 0, control.stderr)
+    const self = fileURLToPath(import.meta.url) // outside the root and the temp folder
+    const links = { '.git/config': 'ln .git/config hl-cfg', 'a file outside the root': `ln ${JSON.stringify(self)} hl-out`, 'a file in the root': 'ln src/judged.txt hl-in' }
+    const made = Object.entries(links).filter(([, c]) => judge('/bin/sh', '-c', c).status === 0).map(([k]) => k)
+    check('judge: no hard link can be made, to a protected file, a file outside the root or one in it', made.length === 0, made.join(', '))
     check('judge: a non-loopback connection is refused', judge('/usr/bin/curl', '-s', '-m', '5', 'https://example.com').status !== 0)
     const unix = judge(process.execPath, '-e', `require('net').connect(${JSON.stringify(sock)}).on('connect',()=>{console.log('CONNECTED');process.exit(0)}).on('error',e=>{console.log(e.code);process.exit(3)})`)
     check('judge: a unix socket is refused', unix.status !== 0 && !/CONNECTED/.test(unix.stdout), unix.stdout + unix.stderr)

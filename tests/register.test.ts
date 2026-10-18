@@ -17,7 +17,7 @@ type Run = { exitCode: number; stdout: string; stderr: string; isStdoutTruncated
 const ok = (stdout = '', exitCode = 0): Run => ({ exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false })
 
 /** A small engine: host files under /host, the user's files under /home/u, plugin files keyed from /instructions/, processes scripted. */
-function world(on: On, opts: { files?: Record<string, string>; exempt?: boolean; git?: Record<string, string>; tools?: string[]; install?: string; flow?: boolean; record?: Partial<FlowRecord>; calls?: Record<string, unknown>[]; flowGit?: (args: string[]) => Run | undefined; mockClock?: boolean } = {}) {
+function world(on: On, opts: { files?: Record<string, string>; exempt?: boolean; git?: Record<string, string>; tools?: string[]; install?: string; flow?: boolean; record?: Partial<FlowRecord>; calls?: Record<string, unknown>[]; flowGit?: (args: string[]) => Run | undefined; mockClock?: boolean; env?: Record<string, string>; settingsFail?: boolean } = {}) {
   const flowRecord = opts.flow ? { [versionPath(HOME, FLOW_ID, 1)]: JSON.stringify(activeRecord({ root: ROOT, repoKey: repoKeyOf(`${ROOT}/.git`), ...opts.record })), [`${ROOT}/.git/HEAD`]: 'ref: refs/heads/main\n' } : {}
   const files = new Map<string, string>(Object.entries({ ...opts.files, ...flowRecord }))
   const mtimes = new Map<string, number>()
@@ -26,6 +26,8 @@ function world(on: On, opts: { files?: Record<string, string>; exempt?: boolean;
   const spawns: string[][] = []
   const toasts: string[] = []
   const logs: string[] = []
+  const envs: Array<Record<string, string> | undefined> = []
+  const argvs: string[][] = []
   const touch = (p: string) => { clock += 1000; mtimes.set(p, clock) }
   for (const k of files.keys()) touch(k)
   const norm = (p: string) => {
@@ -42,8 +44,9 @@ function world(on: On, opts: { files?: Record<string, string>; exempt?: boolean;
   on('classic.PostToolUse', () => ({}))
   on('session.root', () => ({ value: ROOT as never }))
   on('session.cwd', () => ({ value: ROOT as never }))
-  on('env.get', ($, e) => ({ value: ((e as { name?: string }).name === 'HOME' ? HOME : undefined) as never }))
+  on('env.get', ($, e) => { const name = (e as { name?: string }).name ?? ''; return { value: (name === 'HOME' ? HOME : opts.env?.[name]) as never } })
   on('session.id', () => ({ value: 'sess-1234abcd' as never }))
+  on('settings.read', () => (opts.settingsFail ? { deny: 'EACCES: settings' } : { value: {} as never }))
   on('session.usage', () => ({ value: { startedAt: 0, context: { window: 1_000_000, percent: 10 }, rateLimits: [], cost: { usd: 1 } } as never }))
   if (!opts.mockClock) on('clock.now', () => { clock += 1; return { value: clock as never } }) // else the test's mock.clock answers it
   on('ui.log', ($, e) => { logs.push(String((e as { text?: string }).text)); return { value: undefined as never } })
@@ -71,9 +74,11 @@ function world(on: On, opts: { files?: Record<string, string>; exempt?: boolean;
   })
   on('ui.open', () => ({ value: { isPlaced: true } as never }))
   on('process.run', ($, e) => {
+    envs.push(e.init?.env); argvs.push([...e.argv])
     const flowGit = opts.flowGit ? gitArgs(e.argv) : null, answered = flowGit ? opts.flowGit?.(flowGit) : undefined
     if (answered) return { value: answered as never }
-    const [cmd, ...rest] = e.argv
+    // a bare program name reaches the engine as `/usr/bin/env <name> …` (NK-02); answer it as the name
+    const [cmd, ...rest] = e.argv[0] === '/usr/bin/env' && e.argv[1] && !e.argv[1].startsWith('-') ? e.argv.slice(1) : e.argv
     const script = rest[1] ?? ''
     if (cmd === '/bin/sh' && script.startsWith('printf')) return { value: ok(opts.exempt ? 'builder||' : '||') as never }
     if (cmd === '/bin/sh' && script.includes('cat >> "$1"')) {
@@ -87,7 +92,7 @@ function world(on: On, opts: { files?: Record<string, string>; exempt?: boolean;
     if (cmd === '/bin/sh' && script === WORKER_SCRIPT) { spawns.push(rest.slice(3)); return { value: ok() as never } }
     if (cmd === '/bin/date') return { value: ok('2026-10-11 21:07\n') as never }
     if (cmd === '/usr/bin/uname') return { value: ok('Darwin\n') as never }
-    if (cmd === '/usr/bin/stat') return { value: ok('1\n') as never }
+    if (cmd === '/usr/bin/stat') return { value: (rest.includes('%HT') ? { ...ok(''), exitCode: 1 } : ok('1\n')) as never } // %HT: as a missing file
     if (opts.flow && e.argv.includes('rev-parse')) return { value: ok(`${ROOT}\n${ROOT}/.git\n${ROOT}/.git\n${ROOT}/.git/index\n`) as never }
     if (opts.flow && e.argv.includes('symbolic-ref')) return { value: ok('main\n') as never }
     if (cmd === 'sqlite3') return { deny: 'ENOENT: sqlite3' }
@@ -109,7 +114,7 @@ function world(on: On, opts: { files?: Record<string, string>; exempt?: boolean;
   on('tool.call', ($, e) => { opts.calls?.push(e as unknown as Record<string, unknown>); return { result: 'ran' as never } })
   on('tool.check', () => ({ decision: 'allow' }))
   on('prompt.context', ($, e) => ({ blocks: e.blocks, ...(e.instructionFiles ? { instructionFiles: e.instructionFiles } : {}) }))
-  return { files, appended, spawns, toasts, logs }
+  return { files, appended, spawns, toasts, logs, envs, argvs }
 }
 
 const PLUGIN_FILES = {
@@ -129,6 +134,31 @@ describe('register', () => {
     await $.session.start(SESSION)
     expect(names.sort()).toEqual(['flow_check', 'flow_status', 'memory_get', 'memory_save', 'memory_search'])
     expect(commands.sort()).toEqual(['flow-approve', 'flow-build', 'flow-decide', 'flow-off', 'flow-plan', 'flow-reject', 'flow-retry', 'flow-setup', 'flow-ship', 'flow-status', 'flow-verify', 'flow-waive'])
+  })
+
+  test('every process the mod starts gets the filtered PATH: entries in the project, a temp folder or relative are dropped (NK-02)', async ($, on) => {
+    const w = world(on, { files: PLUGIN_FILES, env: { PATH: `${ROOT}/node_modules/.bin:/usr/local/bin:.:/private/tmp/x/bin:/usr/bin`, TMPDIR: '/private/var/folders/t' } })
+    await $.session.start(SESSION)
+    await $.tool.call({ tool: 'Read', file_path: '/host/README.md' } as never)
+    expect(w.envs.length).toBeGreaterThan(0)
+    expect(w.envs.map(e => e?.PATH)).toEqual(w.envs.map(() => '/usr/local/bin:/usr/bin'))
+  })
+
+  test('a bare program name runs through env with the filtered PATH, so the engine\'s own lookup never decides (NK-02)', async ($, on) => {
+    const w = world(on, { files: PLUGIN_FILES, env: { PATH: `${ROOT}/bin:/usr/bin` } })
+    await $.session.start(SESSION)
+    await $.prompt.context({ blocks: BLOCKS, instructionFiles: [HOST_FILE] })
+    const at = w.argvs.findIndex(a => a[1] === 'sqlite3')
+    expect(at).toBeGreaterThanOrEqual(0)
+    expect(w.argvs[at]?.[0]).toBe('/usr/bin/env')
+    expect(w.envs[at]?.PATH).toBe('/usr/bin')
+  })
+
+  test('settings that cannot be read leave the system folders, never the host PATH (NK-02)', async ($, on) => {
+    const w = world(on, { files: PLUGIN_FILES, settingsFail: true, env: { PATH: `${ROOT}/bin:/usr/local/bin:/usr/bin` } })
+    await $.session.start(SESSION)
+    expect(w.envs.length).toBeGreaterThan(0)
+    expect(w.envs.every(e => e?.PATH === '/usr/bin:/bin:/usr/sbin:/sbin')).toBe(true)
   })
 
   test('prompt.context adds the shared and local instructions, the memory digest and the latest handoff', async ($, on) => {

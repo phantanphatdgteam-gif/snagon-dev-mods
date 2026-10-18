@@ -4,7 +4,7 @@
 import { fill } from '../flow/data/templates'
 import { approve, dropEcho, originOk, parseOwner, refusalText, takeCode, type ApproveCmd, type EchoKind, type OwnerCmd, type OwnerName, type Origin } from './flow-owner'
 import { activeView, dropView, emptySession, holderOf, mutateSession, session, staticsOf, type FlowHost } from './flow-host'
-import { claimLock, listActive, removeRecord, updateRecord, type Approval } from './flow-state'
+import { claimLock, listActive, removeRecord, updateRecord, type Approval, type FlowRecord } from './flow-state'
 import { flowCard } from './flow-turn'
 import { applySetup, pastedCheck, setupCommand, setupHash } from './flow-freeze'
 import { applyBaseline, baselineHash, showBaseline } from './flow-baseline'
@@ -13,9 +13,10 @@ import { buildCommand } from './flow-build'
 import { applyWaive, decideCommand, retryCommand, waiveCommand, waiveHash } from './flow-decide'
 import { verifyCommand } from './flow-verify'
 import { applyRelease, releaseHash, shipCommand } from './flow-ship'
+import { cfgDetail, cfgDrift } from './flow-git'
 
 export const FLOW_COMMANDS: readonly { name: OwnerName; description: string; argumentHint?: string }[] = [
-  { name: 'flow-setup', description: 'flow: start or re-freeze (commands, sandbox, tools); the owner approves what the pane shows', argumentHint: '[test|lint|typecheck|build="<argv>"] [tools=+<Tool>] [mcp=+<name>]' },
+  { name: 'flow-setup', description: 'flow: start or re-freeze (commands, sandbox, tools); the owner approves what the pane shows', argumentHint: '[test|lint|typecheck|build="<argv>"] [tools=+<Tool>] [mcp=+mcp__<server>__<tool>]' },
   { name: 'flow-plan', description: 'flow: plan the work, or show the linted plan for approval' },
   { name: 'flow-build', description: 'flow: build the approved plan, feature by feature' },
   { name: 'flow-verify', description: 'flow: verify everything before shipping' },
@@ -123,10 +124,25 @@ async function flowOff(h: FlowHost, id: string | undefined): Promise<string> {
   const ids = [...list.active.map(r => r.flowId), ...list.invalid]
   const target = id ?? (ids.length === 1 ? ids[0] : undefined)
   if (target === undefined || !ids.includes(target)) return ids.length ? fill(lang, 'off.which', { commands: ids.map(x => `/flow-off ${x}`).join(' · ') }) : fill(lang, 'status.none', { address: h.address })
+  const r = list.active.find(x => x.flowId === target)
   const out = await removeRecord(h.io, h.home, target, 'off')
   dropView()
   if (!out.ok) return fill(lang, 'off.failed', { id: target, detail: out.reason })
   takeCode(undefined)
   await mutateSession(h, () => emptySession())
-  return fill(lang, 'off.done', { id: target })
+  return [fill(lang, 'off.done', { id: target }), await offCfg(h, r), fill(lang, 'end.careful', {})].filter(Boolean).join('\n')
+}
+
+/** NK-01, GAP-054-7: a hook or config planted during the flow outlives it, and git runs hooks for the owner's next command
+ * outside any sandbox, so /flow-off (the flow already ended) names what differs from the freeze: of parts frozen before
+ * 0.5.4 (no `core.hooksPath` part) only those they hold, or says the comparison could not be made. */
+async function offCfg(h: FlowHost, r: FlowRecord | undefined): Promise<string> {
+  if (r?.frozen.hCfg === undefined) return ''
+  try {
+    const drift = (await cfgDrift(h.io, r.root, h.home, r.frozen)) ?? []
+    const shown = 'cfg:core.hooksPath' in r.frozen ? drift : drift.filter(k => `cfg:${k}` in r.frozen)
+    return shown.length ? fill(h.language, 'off.cfgChanged', { files: shown.slice(0, 5).join(', ') }) : ''
+  } catch (err) {
+    return fill(h.language, 'off.cfgUnknown', { detail: cfgDetail(err) })
+  }
 }

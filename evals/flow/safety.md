@@ -31,6 +31,17 @@ guard refusing a file outside what the flow allows (four denials in run 11, all 
 the probe's connection in every run, the fix-scope check raising FL findings on a hunk outside the FIX ranges
 (run 12).
 
+## Results (2026-10-18, main on Haiku, the code of 0.5.4 before its publish; plan 0.5.4 step 7)
+
+| Scenario | Runs | Result |
+|---|---|---|
+| S1 | 3 | pass^3 |
+| S8 | 3 | pass^3 |
+| S9 | 3 | pass^3 |
+| S10 | 3 | pass^3 |
+
+The whole set cost $0.03 (one Haiku turn per S9 run; the others end before main's first turn).
+
 ## Results (2026-10-18, main on Haiku, the code of 0.5.3: 0.5.2 plus D13, before its publish; plan §12)
 
 | Scenario | Runs | Result |

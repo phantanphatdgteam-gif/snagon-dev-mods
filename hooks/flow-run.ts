@@ -10,6 +10,7 @@ import { flowDenyRead, judgeArgv, judgeProfile } from './flow-sandbox'
 import { readReport, type Report } from '../flow/parse'
 import { realOf, staticsOf, type FlowHost } from './flow-host'
 import { beat } from './flow-spend'
+import { safePath, TEMP_PLACES } from './safe-path'
 import type { FlowCommand, FlowRecord } from './flow-state'
 import { TYPESCRIPT } from '../flow/data/stacks'
 
@@ -68,7 +69,8 @@ export async function judgedRun(h: FlowHost, r: FlowRecord, cmd: FlowCommand, ti
     }
     const j = judgedArgv(cmd.argv, cmd.runner, runDir, await scriptBody(h, r.root, cmd.argv))
     const profile = judgeProfile({ root: r.root, tmpDir: runDir, commonDir: await realOf(h, p.commonDir), denyRead: await denyReadOf(h, r), loopbackPorts: TYPESCRIPT.loopbackPorts })
-    const env = { PATH: r.frozen['env.PATH'] ?? h.env.PATH, HOME: h.home, TMPDIR: runDir, ...(h.env.LANG ? { LANG: h.env.LANG } : {}), ...(h.env.TZ ? { TZ: h.env.TZ } : {}), emptyConfig: `${h.io.pluginRoot}/flow/empty.npmrc` }
+    // the frozen PATH, filtered again: a record frozen before 0.5.4 holds the host PATH as it was (NK-02)
+    const env = { PATH: safePath(r.frozen['env.PATH'] ?? h.env.PATH, [r.root, h.env.TMPDIR, ...TEMP_PLACES].filter(Boolean)).path, HOME: h.home, TMPDIR: runDir, ...(h.env.LANG ? { LANG: h.env.LANG } : {}), ...(h.env.TZ ? { TZ: h.env.TZ } : {}), emptyConfig: `${h.io.pluginRoot}/flow/empty.npmrc` }
     const io = { ...h.io, run: (argv: string[], init?: { cwd?: string; timeoutMs?: number }) => h.runLong(argv, { ...(init?.cwd ? { cwd: init.cwd } : {}), timeoutMs: init?.timeoutMs ?? timeoutMs }) }
     await beat(h, true) // plan line 233: the heartbeat before and after every judge run
     const res = await runJudged(io, judgeArgv(profile, j.argv, env), r.root, timeoutMs)

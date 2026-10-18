@@ -230,6 +230,8 @@ export function judgeProfile(o: { root: string; tmpDir: string; commonDir: strin
     `(deny file-write* ${[...PROTECTED_DIRS, ...PROTECTED_FILES].map(n => anyCase(o.root, n)).join(' ')})`,
     ...(o.denyRead.length ? [`(deny file-read* ${o.denyRead.map(sub).join(' ')})`] : []),
     '(deny file-read* file-write* (regex #"^/dev/(tty|pty|ptmx|ttys|cu\\.|console)"))',
+    // no hard links at all: macOS already refuses one to a file the run may not write; this closes the rest (NK-03)
+    '(deny file-link)',
     `(deny file-ioctl) (allow file-ioctl ${devices})`,
     `(deny mach-lookup) (allow mach-lookup ${JUDGE_MACH_SERVICES.map(n => `(global-name "${n}")`).join(' ')})`,
     '(deny mach-register)', '(deny lsopen)', '(deny appleevent-send)', '(deny job-creation)',

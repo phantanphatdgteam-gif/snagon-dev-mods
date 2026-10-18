@@ -324,6 +324,15 @@ export function securityForced(files: readonly DiffFile[], stack: Stack): boolea
 export const outOfScope = (files: readonly DiffFile[], fFiles: readonly string[]): string[] =>
   files.map(f => f.path).filter(p => !FLOW_TREE_EXCLUDES.some(x => p === x || p.startsWith(`${x}/`)) && !fFiles.some(x => x.toLowerCase() === p.toLowerCase()))
 
+/** The mod's version from its manifest, for the owner's card (NK-04); '' when it cannot be read or is not a plain
+ * version string. */
+export async function pluginVersion(io: Io, root: string): Promise<string> {
+  try {
+    const v: unknown = (JSON.parse(await io.read(`${root}/.claude-plugin/plugin.json`)) as { version?: unknown }).version
+    return typeof v === 'string' && /^[\w.+-]{1,40}$/.test(v) ? v : ''
+  } catch { return '' }
+}
+
 /** One hash over the loaded plugin's files (S2, every flow_check), the generated types and .git left out. */
 export async function pluginIntegrity(io: Io, root: string): Promise<string> {
   const parts: string[] = []

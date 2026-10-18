@@ -1,6 +1,6 @@
 # snagon-dev-mods
 
-Phiên bản 0.5.3. Bản tiếng Anh: [README.md](README.md). Hướng dẫn đầy đủ (tiếng Anh): [docs/guide.md](docs/guide.md). Hướng dẫn flow cho Chủ dự án (tiếng Việt): [docs/flow.md](docs/flow.md).
+Phiên bản 0.5.4. Bản tiếng Anh: [README.md](README.md). Hướng dẫn đầy đủ (tiếng Anh): [docs/guide.md](docs/guide.md). Hướng dẫn flow cho Chủ dự án (tiếng Việt): [docs/flow.md](docs/flow.md).
 
 ## Đây là gì
 
