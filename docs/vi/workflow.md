@@ -2,7 +2,7 @@
 
 Quay lại [README](../../README.vi.md). Tra cứu file: [files.md](files.md). Chi tiết: [guide.md](../guide.md) (tiếng Anh) và [flow.md](../flow.md).
 
-Phần A đưa một dự án từ ý tưởng đến kết quả bằng các skill, agent và lệnh đi kèm; cách này dùng được cho mọi ngôn ngữ. Phần B đi theo một phiên từ đầu đến cuối. Phần C chạy flow trên một dự án TypeScript, từ thiết lập tới phát hành, với số liệu thật của một lượt chạy.
+Phần A đưa một dự án từ ý tưởng đến kết quả bằng các skill, agent và lệnh đi kèm; cách này dùng được cho mọi ngôn ngữ. Phần B đi theo một phiên từ đầu đến cuối. Phần C chạy flow trên một dự án TypeScript trên macOS, từ thiết lập tới phát hành, với số liệu thật của một lượt chạy; một dự án Python đi qua đúng các bước đó với lệnh riêng của nó.
 
 Các tên trong ví dụ đều có trong mod. Lệnh được gõ dưới dạng `/<name>` (hiển thị là `/snagon-dev-mods:<name>` khi tên trùng nhau). Skill do mô hình chọn khi phù hợp, hoặc bạn gõ `/<skill-name>`. Agent được dùng khi bạn yêu cầu ("use the planner agent") hoặc khi mô hình tự giao việc; tên đầy đủ là `snagon-dev-mods:<agent>`.
 
@@ -24,7 +24,7 @@ flowchart TD
   P5 -.->|tính năng tiếp theo, phiên mới| P5
 ```
 
-Giữa các phiên, nhật ký, bản bàn giao và memory digest chuyển ngữ cảnh sang phiên sau, nên bạn không phải nhắc lại. Với dự án TypeScript, flow có thể làm thay giai đoạn 4 đến 7; phần C cho thấy cách làm.
+Giữa các phiên, nhật ký, bản bàn giao và memory digest chuyển ngữ cảnh sang phiên sau, nên bạn không phải nhắc lại. Với dự án TypeScript hoặc Python, trên macOS, flow có thể làm thay giai đoạn 4 đến 7; phần C cho thấy cách làm.
 
 ### Giai đoạn 0: Cài đặt và thiết lập
 
@@ -188,7 +188,9 @@ Dự án là dự án thử mà các bài eval của flow dùng: một thư vi�
 - F-03: add a new export `median(xs)` to the existing module `src/stats.ts` ...; tests in `tests/stats.test.ts`.
 ```
 
-Giờ và chi phí dưới đây là của lượt chạy thử 19 (2026-10-18; phiên chính chạy Opus 5.5, planner chạy Opus, các agent khác chạy Sonnet). Lượt đó chạy bản 0.5.2; bản 0.5.3 chỉ đổi cách xử lý khi main không chịu khởi động ticket, và gửi cho main ít lời nhắc ticket hơn. Bản 0.5.4 đổi những gì setup kiểm và những gì judge được làm, không đổi các bước dưới đây; lượt chạy thử của nó (20) phát hành sau 13 phút, tốn 6,61 USD.
+Giờ và chi phí trong bảng là của lượt chạy thử 19, một lượt cũ được giữ làm lịch sử (2026-10-18; phiên chính chạy Opus 5.5, planner chạy Opus, các agent khác chạy Sonnet). Lượt đó chạy bản 0.5.2; bản 0.5.3 chỉ đổi cách xử lý khi main không chịu khởi động ticket, và gửi cho main ít lời nhắc ticket hơn. Bản 0.5.4 đổi những gì setup kiểm và những gì judge được làm, không đổi các bước dưới đây; lượt chạy thử của nó (lượt 20 trong `evals/flow/dry-run.md`) phát hành sau 13 phút, tốn 6,61 USD (cả phiên; trong đó 5,49 USD thuộc flow). Bản 0.6.0 thêm một stack thứ hai và đổi nhiều hơn (xem đoạn kế tiếp); lượt 21, lượt đầu tiên chạy mã 0.6.0 trên dự án mẫu này (bước 1 của bản đó, TypeScript), phát hành sau 13 phút, tốn 7,02 USD (cả phiên; trong đó 5,75 USD thuộc flow) trong 16 lượt của phiên chính. Mô hình của phiên chính ở các lượt 20 và 21 không được ghi lại: tiêu đề của bảng trong `dry-run.md` chứa chúng ghi "main on Opus 5.5", nhưng bảng đó đề ngày 2026-10-17, trước các lượt ấy.
+
+Bài đi qua này mang tính TypeScript ở các lệnh và file của nó: script `package.json` (`test`, `lint`, `typecheck`), vitest, eslint, tsc, registry npm mà sandbox phải với tới, và các đường dẫn `src/*.ts`. Một dự án Python (nhận ra bằng `pyproject.toml`, `setup.py`, `setup.cfg`, `requirements*.txt` hoặc `Pipfile`) đi qua đúng các giai đoạn, lệnh và phép duyệt đó; khác nhau ở những gì thiết lập đề xuất, những gì judge chạy và đọc, reviewer, agent sửa build và các miền mạng của sandbox. Thiết lập luôn đề xuất `pytest` của venv (`.venv/bin/pytest`; không có venv thì nó đòi `/flow-setup test="<argv>"`), chỉ đề xuất `ruff check` và `mypy` khi dự án có cấu hình hoặc yêu cầu chúng, và không bao giờ đề xuất build. Một venv thấy các site-packages của hệ thống thì bị từ chối. Judge đọc kết quả của pytest từ báo cáo JUnit của nó. Reviewer là `python-reviewer` và agent sửa build là `tdd-guide`; sandbox với tới PyPI (`pypi.org`, `files.pythonhosted.org`), không phải npm. Nếu khớp nhiều hơn một stack, `/flow-setup stack=<id>` chọn một. Cùng một dự án mẫu ba tính năng có cho cả hai stack (`evals/flow/run.sh fixture <dir> [typescript|python]`). Các lượt chạy thử trên dự án mẫu với phiên chính chạy Haiku đi tới phát hành sau 13 phút, tốn 3,57 USD (TypeScript) và sau 17 phút, tốn 3,44 USD (Python) ngày 2026-10-20, và trên mã của bản phát hành này (2026-10-21) sau 12 phút, tốn 3,09 USD và 3,19 USD (TypeScript; một lượt thứ ba dừng với `couldNotRun` sau `lint`) và sau 13 phút, tốn 2,97 USD (Python); chúng không so được với lượt 19, vốn có phiên chính chạy Opus.
 
 ```mermaid
 sequenceDiagram
@@ -220,13 +222,13 @@ sequenceDiagram
 | 02:51 | `/flow-approve setup <hash8>` | Main ghi khối sandbox vào `.claude/settings.local.json` (Claude Code hỏi; bạn cho phép), chạy lệnh thử sandbox, rồi judge chạy baseline | `lint` đỏ, nên flow chờ bạn |
 | 02:52 | `/flow-status`, rồi `/flow-approve baseline <hash8>` | `lint` đỏ được nhận theo kiểu "không thêm lỗi mới" | `Đã nhận baseline. Bước tiếp: /flow-plan.` |
 | 02:53 | `/flow-plan Build the three features described in docs/intent.md, in that order, exactly as that file says.` | Planner viết `docs/flow/plan.md`: sáu tiêu chí (một Optional), ba tính năng, `Security: yes` ở F-02 | `Planner bắt đầu; flow_status đưa ticket cho agent chính.` |
-| 02:54 | `/flow-plan`, rồi `/flow-approve plan <hash8>` | Plan hiện trong khung flow cùng trần chi phí của flow, 11 USD cho ba tính năng; lệnh duyệt chốt cả hai | `Đã duyệt kế hoạch: 3 tính năng. Bước tiếp: /flow-build.` |
+| 02:54 | `/flow-plan`, rồi `/flow-approve plan <hash8>` | Plan hiện trong khung flow; lệnh duyệt chốt plan và các file của nó | `Đã duyệt kế hoạch: 3 tính năng. Bước tiếp: /flow-build.` |
 | 02:55 | `/flow-build` | F-01 (`clamp`): test RED, mã, judge, và review đạt ngay. F-02 (`sum`, có security-reviewer) và F-03 (`median`): mỗi cái cần một lần sửa và một lần xem lại trước khi niêm phong | 13 phút không phải gõ gì |
 | 03:08 | `/flow-verify` | Chạy lại mọi lệnh cùng mọi tiêu chí Required, quét rác, viết `docs/flow/verify.md` | Flow chờ `/flow-ship` |
 | 03:09 | `/flow-ship` | Main commit phần đã kiểm tra | `Xong thì chạy lại /flow-ship.` |
 | 03:10 | `/flow-ship`, rồi `/flow-approve release <hash8> <mã>` | Bản phát hành hiện trên một màn hình kèm mã dùng một lần; lệnh duyệt kiểm lại tất cả và mod tự push | `Đã phát hành … Flow đã xong.` |
 
-Cả flow mất 19 phút và 9,18 USD trong 26 lượt của phiên chính: thiết lập 0,21, plan 0,89, F-01 1,26, F-02 2,81, F-03 2,70, kiểm tra 0,31, phát hành khoảng 1. Không lần nào bị chặn, không có miễn trừ nào. Script đóng vai Chủ dự án gõ 14 lệnh; hai lệnh là gõ lặp trong lúc chờ, nên bảng chỉ ghi mười hai lệnh bạn cần.
+Ở lượt chạy thử 19, cả flow mất 19 phút và 9,18 USD trong 26 lượt của phiên chính: thiết lập 0,21, plan 0,89, F-01 1,26, F-02 2,81, F-03 2,70, kiểm tra 0,31, phát hành khoảng 1 (lấy từ nhật ký chi phí riêng của lượt đó; repository chỉ giữ các tổng, trong `evals/flow/dry-run.md`). Không lần nào bị chặn, không có miễn trừ nào. Script đóng vai Chủ dự án gõ 14 lệnh; hai lệnh là gõ lặp trong lúc chờ, nên bảng chỉ ghi mười hai lệnh bạn cần. Flow có tất cả mười ba lệnh của Chủ dự án; lượt này không cần `/flow-decide`, `/flow-retry`, `/flow-waive`, `/flow-allow`, `/flow-reject` hay `/flow-off`.
 
 Sau flow, dự án có: mã và test mới, `docs/flow/plan.md` và `docs/flow/verify.md`, tất cả nằm trong commit phát hành trên remote. Khối sandbox vẫn ở `.claude/settings.local.json`; commit phát hành không chứa file đó. Bản ghi flow trong `~/.snagon/flow/` bị xóa khi flow kết thúc; dấu kết thúc và các bản xem trong `.snagon/flow/` ở lại làm lịch sử.
 
@@ -235,5 +237,6 @@ Sau flow, dự án có: mã và test mới, `docs/flow/plan.md` và `docs/flow/v
 - Viết yêu cầu vào file và giữ tính năng nhỏ. Mỗi lần sửa kèm một lượt xem lại tốn khoảng 1 đến 1,5 USD, nên yêu cầu càng rõ thì càng rẻ.
 - Nói rõ cái gì là mới. "Giữ test cũ xanh" đã là điều kiện xong của mọi tính năng, không cần thành tiêu chí.
 - Đưa trình định dạng vào lệnh lint đã duyệt (ví dụ `prettier --check`), để hook pre-commit không còn gì để viết lại lúc phát hành và bạn không phải kiểm lại.
-- Xem dòng chi phí trên thẻ flow. Các trần (15 USD mỗi phiên, trần flow hiện cùng plan) dừng flow trước khi tiêu quá tay; `/flow-retry cost` nâng trần một lần.
+- Xem dòng chi phí trên thẻ flow. Từ 2026-10-20 flow chỉ đo và hiện chi phí (của phiên và của flow); nó không có trần chi phí. Thứ dừng một flow cứ thất bại là số vòng theo từng phạm vi: một tính năng 3 vòng sửa, 3 vòng review và 4 vòng debug, plan 3 vòng sửa, bước kiểm tra 2 vòng sửa và 3 vòng debug, và `/flow-retry` thêm một bộ vòng nữa, một lần (với một tính năng: 1 vòng sửa, 1 vòng review và 2 vòng debug). Các thông báo chi phí ở 5, 10 và 50 USD đến từ harness trong mọi phiên, có flow hay không; chúng không dừng gì.
+- Khi một ticket debug không đưa được tính năng về xanh vì test RED của nó sai, `/flow-allow red F-NN <reason>` cho một ticket debug của tính năng đó sửa file test RED (chỉ trong lúc F-NN đang được xây, sau khi các test RED của nó đã được ghi). Bạn duyệt bằng `/flow-approve allow <hash8>`, lệnh này cũng gỡ chặn các vòng debug của tính năng đó mà không cần `/flow-retry`; thay đổi vẫn quay lại thành finding `red-test-changed` để bạn đọc và miễn trừ.
 - Khi flow bị chặn, đọc lý do trước khi chọn lối ra: miễn trừ là quyết định của bạn, được ghi vào báo cáo kiểm tra cùng lý do bạn nêu.

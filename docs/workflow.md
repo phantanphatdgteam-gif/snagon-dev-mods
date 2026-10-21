@@ -2,7 +2,7 @@
 
 Back to the [README](../README.md). File reference: [files.md](files.md). Details: [guide.md](guide.md).
 
-Part A takes a project from idea to result with the bundled skills, agents and commands; it works for any language. Part B follows one session from start to end. Part C runs the flow on a TypeScript project, from setup to release, with the real numbers of one run.
+Part A takes a project from idea to result with the bundled skills, agents and commands; it works for any language. Part B follows one session from start to end. Part C runs the flow on a TypeScript project on macOS, from setup to release, with the real numbers of one run; a Python project goes through the same steps with its own commands.
 
 Names in the examples exist in the mod. Commands are typed as `/<name>` (shown as `/snagon-dev-mods:<name>` when names clash). Skills are picked by the model when relevant, or you type `/<skill-name>`. Agents are used when you ask ("use the planner agent") or when the model delegates; the full name is `snagon-dev-mods:<agent>`.
 
@@ -24,7 +24,7 @@ flowchart TD
   P5 -.->|next feature, new session| P5
 ```
 
-Between sessions the journal, the handoff and the memory digest carry the context to the next session, so you do not repeat yourself. On a TypeScript project the flow can take phases 4 to 7 off your hands; Part C shows how.
+Between sessions the journal, the handoff and the memory digest carry the context to the next session, so you do not repeat yourself. On a TypeScript or Python project, on macOS, the flow can take phases 4 to 7 off your hands; Part C shows how.
 
 ### Phase 0: Install and setup
 
@@ -188,7 +188,9 @@ The project is the one the flow evals use: a small TypeScript library with `sum`
 - F-03: add a new export `median(xs)` to the existing module `src/stats.ts` ...; tests in `tests/stats.test.ts`.
 ```
 
-The times and costs below are dry run 19 (2026-10-18; main on Opus 5.5, the planner on Opus, the other agents on Sonnet). It ran 0.5.2; 0.5.3 changed only what happens when main will not start a ticket, and it sends main fewer ticket prompts. 0.5.4 changed what setup checks and what the judge may do, not these steps; its dry run (20) released in 13 minutes for $6.61.
+The times and costs in the table are dry run 19, an older run kept as history (2026-10-18; main on Opus 5.5, the planner on Opus, the other agents on Sonnet). It ran 0.5.2; 0.5.3 changed only what happens when main will not start a ticket, and it sends main fewer ticket prompts. 0.5.4 changed what setup checks and what the judge may do, not these steps; its dry run (run 20 in `evals/flow/dry-run.md`) released in 13 minutes for $6.61 (session; $5.49 of it in the flow). Release 0.6.0 adds a second stack and changes more (see the next paragraph); run 21, the first run of 0.6.0 code on this fixture (step 1 of that release, TypeScript), released in 13 minutes for $7.02 (session; $5.75 in the flow) in 16 main turns. The main model of runs 20 and 21 is not recorded: the heading of the `dry-run.md` table that holds them says "main on Opus 5.5", but it is dated 2026-10-17, before those runs.
+
+This walk-through is TypeScript-specific in its commands and files: `package.json` scripts (`test`, `lint`, `typecheck`), vitest, eslint, tsc, the npm registry that the sandbox must reach, and `src/*.ts` paths. A Python project (found by `pyproject.toml`, `setup.py`, `setup.cfg`, `requirements*.txt` or `Pipfile`) goes through the same phases, commands and approvals; what setup proposes, what the judge runs and reads, the reviewer, the build fixer and the sandbox's network domains differ. Setup always proposes the venv's `pytest` (`.venv/bin/pytest`; without one it asks for `/flow-setup test="<argv>"`), proposes `ruff check` and `mypy` only when the project configures or requires them, and never proposes a build. A venv that sees the system site-packages is refused. The judge reads pytest's results from its JUnit report. The reviewer is `python-reviewer` and the build fixer is `tdd-guide`; the sandbox reaches PyPI (`pypi.org`, `files.pythonhosted.org`), not npm. If more than one stack matches, `/flow-setup stack=<id>` picks one. The same three-feature fixture exists for both stacks (`evals/flow/run.sh fixture <dir> [typescript|python]`). Fixture dry runs with the main on Haiku ran to the release in 13 minutes for $3.57 (TypeScript) and in 17 minutes for $3.44 (Python) on 2026-10-20, and on the code of this release (2026-10-21) in 12 minutes for $3.09 and $3.19 (TypeScript; a third run stopped with `couldNotRun` after `lint`) and in 13 minutes for $2.97 (Python); they are not comparable with run 19, whose main ran on Opus.
 
 ```mermaid
 sequenceDiagram
@@ -220,13 +222,13 @@ sequenceDiagram
 | 02:51 | `/flow-approve setup <hash8>` | Main writes the sandbox block into `.claude/settings.local.json` (Claude Code asks; you allow it), runs the probe, and the judge runs the baseline | `lint` is red, so the flow waits for you |
 | 02:52 | `/flow-status`, then `/flow-approve baseline <hash8>` | The red `lint` is accepted as "no new failures" | `Baseline accepted. Next: /flow-plan.` |
 | 02:53 | `/flow-plan Build the three features described in docs/intent.md, in that order, exactly as that file says.` | The planner writes `docs/flow/plan.md`: six criteria (one Optional), three features, `Security: yes` on F-02 | `The planner starts now; flow_status gives main its ticket.` |
-| 02:54 | `/flow-plan`, then `/flow-approve plan <hash8>` | The plan shows in the pane with the flow cost cap, 11 USD for three features; the approval freezes both | `Plan approved: 3 features. Next: /flow-build.` |
+| 02:54 | `/flow-plan`, then `/flow-approve plan <hash8>` | The plan shows in the pane; the approval freezes the plan and its files | `Plan approved: 3 features. Next: /flow-build.` |
 | 02:55 | `/flow-build` | F-01 (`clamp`): RED tests, code, judge, and a review that passed at once. F-02 (`sum`, with the security reviewer) and F-03 (`median`): each needed one fix and one second look before its seal | Nothing to type for 13 minutes |
 | 03:08 | `/flow-verify` | Every command again with every Required criterion, the junk scan, and `docs/flow/verify.md` | The flow waits for `/flow-ship` |
 | 03:09 | `/flow-ship` | Main commits the verified work | `Run /flow-ship again when it is done.` |
 | 03:10 | `/flow-ship`, then `/flow-approve release <hash8> <code>` | The release shows on one screen with its one-time code; the approval checks it all again and the mod pushes | `Released … The flow is done.` |
 
-The whole flow took 19 minutes and 9.18 USD in 26 main turns: setup 0.21, plan 0.89, F-01 1.26, F-02 2.81, F-03 2.70, verify 0.31, and about 1 for the release. Nothing blocked and nothing was waived. The script that played the owner typed 14 commands; two were repeats sent while it waited, so the table shows the twelve you need.
+In dry run 19 the whole flow took 19 minutes and 9.18 USD in 26 main turns: setup 0.21, plan 0.89, F-01 1.26, F-02 2.81, F-03 2.70, verify 0.31, and about 1 for the release (from that run's own cost log; the repository keeps only the totals, in `evals/flow/dry-run.md`). Nothing blocked and nothing was waived. The script that played the owner typed 14 commands; two were repeats sent while it waited, so the table shows the twelve you need. The flow has thirteen owner commands in all; this run needed no `/flow-decide`, `/flow-retry`, `/flow-waive`, `/flow-allow`, `/flow-reject` or `/flow-off`.
 
 What the project has afterwards: the new code and tests, and `docs/flow/plan.md` and `docs/flow/verify.md`, all in the release commit on the remote. The sandbox block stays in `.claude/settings.local.json`; the release commit leaves that file out. The flow record in `~/.snagon/flow/` is deleted at the end; its end marker and the views in `.snagon/flow/` stay as history.
 
@@ -235,5 +237,6 @@ What the project has afterwards: the new code and tests, and `docs/flow/plan.md`
 - Write the request in a file and keep features small. Each fix with its second look costs about 1 to 1.5 USD, so a precise request is the cheapest one.
 - Say what is new. "Keep the existing tests green" is already part of done for every feature; it does not need a criterion.
 - Put your formatter in the approved lint command (for example `prettier --check`), so a pre-commit hook has nothing to rewrite at release time and you are not asked to verify again.
-- Read the card's cost line. The caps (15 USD per session, the flow cap shown with the plan) stop the flow before it overspends, and `/flow-retry cost` raises a cap once.
+- Read the card's cost line. Since 2026-10-20 the flow only measures and shows spend (session and flow); it has no cost cap. What stops a flow that keeps failing is the rounds per scope: a feature gets 3 edit, 3 review and 4 debug rounds, the plan 3 edit rounds, the verify step 2 edit and 3 debug rounds, and `/flow-retry` adds one more set of rounds, once (for a feature: 1 edit, 1 review and 2 debug rounds). The cost notices at 5, 10 and 50 USD come from the harness in every session, flow or not; they stop nothing.
+- When a debug ticket cannot get a feature green because its RED test is wrong, `/flow-allow red F-NN <reason>` lets one debug ticket of that feature edit the RED test file (only while F-NN is being built, after its RED tests are recorded). You approve it with `/flow-approve allow <hash8>`, which also releases a block on that feature's debug rounds without `/flow-retry`; the change still comes back as a `red-test-changed` finding for you to read and waive.
 - When the flow blocks, read the cause before you pick an exit: a waiver is your decision, recorded in the verify report with your reason.
