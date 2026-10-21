@@ -1,8 +1,11 @@
 // Command sources and runner integrity (plan v7.1 §3.2, §5.1): what the gate freezes at S2, so that a change to what
-// the judged commands run is CMD-SRC (with the dependency-only exception), and a patched runner is seen.
-import { hashOf, type Io } from './session'
-import { git, type GitPaths } from './flow-git'
-import type { Stack } from '../flow/data/types'
+// the judged commands run is CMD-SRC (with the dependency-only exception), and a patched runner is seen. The TypeScript
+// stack's (hooks/flow-sources.ts until R2 step 1, unchanged).
+import { hashOf, type Io } from '../session'
+import { git, gitKeyHashes, ignoredLoadable, type GitPaths } from '../flow-git'
+import { digestsOf, toolChanged, treeDigest, TreeError, type RunnerState } from '../flow-tree'
+import { TYPESCRIPT } from '../../flow/data/stacks/typescript'
+import type { Stack } from '../../flow/data/types'
 
 const EXTS = ['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs']
 /** A relative path resolved against the folder of `from` (root-relative), or null for a package name. */
@@ -19,7 +22,7 @@ export function moduleFiles(rel: string): string[] {
 }
 
 /** The runner and the toolchain: never changed under the dependency-only exception. */
-export const TOOLCHAIN = /^(?:vitest|@vitest\/.+|vite|vite-node|jest|@jest\/.+|jest-.+|ts-jest|babel-jest|typescript|ts-node|tsx|eslint|@eslint\/.+|@typescript-eslint\/.+|eslint-.+|prettier|@biomejs\/.+|esbuild|@esbuild\/.+|@swc\/(?!helpers$).+|@babel\/(?!runtime(?:-corejs\d+)?$).+|rollup|@rollup\/.+)$/
+export const TOOLCHAIN = /^(?:@types\/.+|vitest|@vitest\/.+|vite|vite-node|jest|@jest\/.+|jest-.+|ts-jest|babel-jest|typescript|ts-node|tsx|eslint|@eslint\/.+|@typescript-eslint\/.+|eslint-.+|prettier|@biomejs\/.+|esbuild|@esbuild\/.+|@swc\/(?!helpers$).+|@babel\/(?!runtime(?:-corejs\d+)?$).+|rollup|@rollup\/.+)$/
 /** Packages whose code decides results: the toolchain and the assertion libraries the runners load. */
 const RUNNER_FAMILY = new RegExp(`${TOOLCHAIN.source.slice(0, -2)}|expect|pretty-format|chai|tinypool|tinyspy|tinyrainbow)$`)
 const DEP_KEYS = ['dependencies', 'devDependencies', 'optionalDependencies']
@@ -263,11 +266,8 @@ export async function commandSources(io: Io, p: GitPaths, commands: ReadonlyArra
   // Past the depth: truncated only when a file the last wave refers to exists and was not reached.
   for (const from of truncated ? [] : wave) for (const ref of referencedPaths(from, texts.get(from) ?? '', aliases)) if (!truncated && !moduleFiles(ref).some(c => found.has(c))) for (const c of moduleFiles(ref)) if (await io.exists(`${p.top}/${c}`)) { truncated = true; break }
   if (truncated) hashes['closure:truncated'] = 'yes'
-  const keys = await git(io, p.top, ['config', '--null', '--get-regexp', '^(filter|alias|remote|push|url)\\.'])
-  if (keys.exitCode > 1) throw new Error('git config failed')
-  hashes['git:config'] = hashOf(keys.exitCode === 0 ? keys.stdout : '')
-  for (const [k, f] of [['git:info/exclude', `${p.commonDir}/info/exclude`], ['git:config.worktree', `${p.gitDir}/config.worktree`]] as const) hashes[k] = await io.read(f).then(hashOf, () => 'absent')
-  return { hashes, reached, setupChain: reached.filter(x => chain.has(x)) }
+  // NK-09: the ignored files node can still load, by content (R2 step 5, one mechanism with Python's)
+  return { hashes: { ...(await ignoredLoadable(io, p, TYPESCRIPT, ['test-results', 'playwright-report', 'blob-report'])), ...hashes, ...(await gitKeyHashes(io, p)) }, reached, setupChain: reached.filter(x => chain.has(x)) }
 }
 
 const CACHE_SPECS = ['*.tsbuildinfo', '.eslintcache', '.prettiercache', '.stylelintcache'].map(g => `:(glob)**/${g}`)
@@ -331,4 +331,40 @@ export async function runnerHash(io: Io, top: string, packages: readonly string[
   const r = await io.run(['/bin/sh', '-c', script, 'sh', `${top}/node_modules/.bin`, ...[...hashed].sort()], { timeoutMs: 120_000 })
   if (r.exitCode !== 0) throw new Error(`runner hash failed: ${r.stderr.trim().slice(0, 200)}`)
   return r.stdout.trim().split(/\s/)[0] ?? ''
+}
+
+/**
+ * Runner integrity from 0.6.0 (R2 step 6, AC-RI-1; runnerHash stays for a record frozen before, GAP-R2-0.6-27): every
+ * node_modules folder under the root, whole (hidden folders aside; a node_modules inside another is part of it), with
+ * the caches the judged run moves out first left out (CACHE_DIRS, at any depth); a file link may lead into the package
+ * managers' caches. 'absent' when there is none (Yarn PnP, a global runner).
+ */
+export async function nodeModulesState(io: Io, top: string, home: string): Promise<RunnerState> {
+  const r = await io.run(['/usr/bin/find', '-P', top, '-mindepth', '1', '(', '-type', 'd', '-name', '.*', '-prune', ')', '-o', '(', '-type', 'd', '-name', 'node_modules', '-print0', '-prune', ')'], { timeoutMs: 120_000 })
+  if (r.exitCode !== 0 || r.isStdoutTruncated) throw new TreeError('read', top, r.stderr.trim().slice(0, 200))
+  const outside = TYPESCRIPT.packageManagers.flatMap(m => m.cacheDirs).map(d => (d.startsWith('~/') ? `${home}${d.slice(1)}` : d))
+  // a workspace package's link (`node_modules/@x/pkg -> ../../packages/pkg`) leads into the project: recorded, not refused
+  const roots = r.stdout.split('\0').filter(Boolean).sort(), tree = await treeDigest(io, { roots, prune: CACHE_DIRS, outside, pinned: [], project: top })
+  if (tree.hash === 'absent') return { hash: 'absent', facts: '', load: [], problems: [] }
+  const tool = await digestsOf(io, await toolDirs(io, roots), false, d => (d.startsWith(`${top}/`) ? d.slice(top.length + 1) : d))
+  return { hash: tree.hash, facts: JSON.stringify({ tool }), load: [], problems: [] }
+}
+/** The runner, toolchain and assertion packages under each node_modules (RUNNER_FAMILY), as folders: top level, in a
+ * scope, and in pnpm's virtual store (`.pnpm/<name>@<version>/node_modules/<name>`). */
+async function toolDirs(io: Io, roots: readonly string[]): Promise<string[]> {
+  const out: string[] = []
+  for (const root of roots) for (const { name: n, kind } of await io.list(root)) {
+    if (n === '.pnpm' && kind === 'dir') {
+      for (const e of (await io.list(`${root}/.pnpm`)).map(i => i.name)) { const name = /^((?:@[^+@/]+\+)?[^@+/]+)@/.exec(e)?.[1]?.replace('+', '/'); if (name && RUNNER_FAMILY.test(name)) out.push(`${root}/.pnpm/${e}/node_modules/${name}`) }
+    } else if (n.startsWith('@') && kind === 'dir') {
+      for (const s of (await io.list(`${root}/${n}`)).map(i => i.name)) if (RUNNER_FAMILY.test(`${n}/${s}`)) out.push(`${root}/${n}/${s}`)
+    } else if (RUNNER_FAMILY.test(n)) out.push(`${root}/${n}`)
+  }
+  return out
+}
+/** Why a re-baseline after an accepted dependency change is refused: a toolchain or assertion package's files changed
+ * (owner decision 2026-10-19), or null. */
+export function nodeModulesRebaseBlock(frozen: string, now: string): string | null {
+  const tool = (s: string): Record<string, string> | undefined => (s ? (JSON.parse(s) as { tool?: Record<string, string> }).tool : {})
+  try { return toolChanged(tool(frozen), tool(now)) } catch { return 'node_modules' }
 }

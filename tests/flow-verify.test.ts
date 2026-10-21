@@ -97,7 +97,7 @@ describe('flow-verify: V1 to V8', () => {
     await run(w, 'flow-verify')
     d.judge = { test: { exit: 1, report: reportOf([OLD, NEW_FAILED]) } }
     await flowCheck(w.host)
-    expect(lastTicket(w)).toMatchObject({ f: 'verify', kind: 'debug', used: false })
+    expect(lastTicket(w)).toMatchObject({ f: 'verify', kind: 'debug', routedType: 'tdd-guide', used: false })
     expect(w.session().value?.tickets[lastTicket(w)?.id ?? '']).toContain(`${METHOD_HEAD}\n\n---\nname: debugging-and-error-recovery`)
     for (let i = 0; i < 3; i += 1) {
       await agentRun(w, lastTicket(w)?.id ?? '', ended('REPRODUCE: test\nLOCALIZE: src/add.ts:1\nHYPOTHESIS: x\nFIX: src/add.ts:1-1\nGUARD: AC-001 adds'))
@@ -111,6 +111,17 @@ describe('flow-verify: V1 to V8', () => {
     expect(w.files.get(VERIFY)).toContain('check:test: the flaky machine clock')
     expect(w.files.get(VERIFY)).toContain('- AC-001: waived')
     expect(w.files.get(VERIFY)).toContain('Blocks the agent caused: 0')
+  })
+
+  test('a red lint command at verify: the verify debug ticket goes to the stack\'s build fixer and names the command (AC-BF-1)', async () => {
+    const { w, d } = await toV1()
+    await run(w, 'flow-verify')
+    d.judge = { ...d.judge, lint: { exit: 1, out: 'src/add.ts:1:1: Unexpected console statement. [Error/no-console]' } }
+    await flowCheck(w.host)
+    expect(lastTicket(w)).toMatchObject({ f: 'verify', kind: 'debug', routedType: 'build-error-resolver', model: 'sonnet', used: false })
+    const text = w.session().value?.tickets[lastTicket(w)?.id ?? ''] ?? ''
+    expect(text).toContain('\nThe approved command lint fails. The output (first 60 lines):\n')
+    expect(text).toContain(`${METHOD_HEAD}\n\n---\nname: debugging-and-error-recovery`)
   })
 
   test('D10-1: the report the owner reads raw has no control or format character but newline and tab', () => {
@@ -196,6 +207,15 @@ describe('flow-verify: V1 to V8', () => {
     await flowCheck(w.host)
     expect(w.files.get(VERIFY)).toContain('## Assumptions\n- F-01: inputs are finite')
     expect(w.files.get(VERIFY)).toContain('Blocks the agent caused: 0')
+  })
+
+  test('an allowance line of the waivers view is listed in the report beside the waivers', async () => {
+    const { w } = await toV1()
+    w.files.set(`${ROOT}/.snagon/flow/waivers.md`, '# Waivers\n- allow red F-01: the helper rejects an empty match\n- allow red F-1: not a feature id\n')
+    await run(w, 'flow-verify')
+    await flowCheck(w.host)
+    expect(w.files.get(VERIFY)).toContain('- allow red F-01: the helper rejects an empty match (waived by the project owner)')
+    expect(w.files.get(VERIFY)).not.toContain('not a feature id')
   })
 
   test('a secret that would reach the report: the redacted report is written and the flow is blocked for the owner, who can verify again', async () => {

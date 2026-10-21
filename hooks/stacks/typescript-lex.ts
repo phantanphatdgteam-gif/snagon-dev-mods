@@ -1,6 +1,7 @@
 // Light JS/TS reading for the scans and the judge, line by line as a diff shows them: comments, strings, template
 // and regex literals told apart from code; bracket depth; where a line sits (a test, a suite, another function, inside
 // control flow); code left unreachable after a return; and the test API written with spaces, `?.` or comments.
+// The TypeScript stack's lexer (hooks/flow-js.ts until R2 step 1, unchanged).
 
 export type LexState = 'code' | 'block' | 'tpl'
 export type LexPart = { text: string; comment: boolean }

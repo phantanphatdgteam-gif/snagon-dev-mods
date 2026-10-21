@@ -12,9 +12,10 @@ import type { CapScope, Caps, Phase, Severity } from '../flow/data/types'
 export type Lifecycle = 'active' | 'done' | 'off'
 export type FlowLock = { sessionId: string; root: string; branch: string; heartbeatAt: number }
 export type LockHolder = Omit<FlowLock, 'heartbeatAt'>
-export type Approval = { kind: 'setup' | 'baseline' | 'plan' | 'release' | 'waive'; echoHash: string; at: number; origin: string }
+export type Approval = { kind: 'setup' | 'baseline' | 'plan' | 'release' | 'waive' | 'allow'; echoHash: string; at: number; origin: string }
 export type Counters = { e: number; r: number; d: number; retried: boolean }
-export type FindingDigest = { id: string; f: string; rubricId: string; sev: Severity; loc: string; status: string }
+/** sig: the hash of the text of the line `loc` names, when the scan had it (a finding follows its line when lines move). */
+export type FindingDigest = { id: string; f: string; rubricId: string; sev: Severity; loc: string; status: string; sig?: string }
 /** review and delta tickets judge a fixed tree; red, author, fix and debug tickets change it by design. */
 export type TicketKind = 'review' | 'delta' | 'fix' | 'debug' | 'red' | 'author'
 export type TicketRecord = { id: string; f: string; sha: string; nonce: string; tree: string; routedType: string; model: string; used: boolean; kind?: TicketKind; toolUseId?: string; agentId?: string; attested?: boolean }
@@ -23,10 +24,12 @@ export type Seal = { f: string; tree: string; evalIds: string[]; tickets: number
 export type Blocked = { reason: string; vars: Record<string, string> }
 export type FlowCommand = { id: string; argv: string[]; runner: string; mode: 'must-pass' | 'no-new-failures' }
 /** What the owner approved at S2 (§2.2, §6 "Frozen at S2"): the commands, the allow-lists, the journal folder, the remote
- * and branch a release pushes to, the caps and the session USD cap. */
+ * and branch a release pushes to, and the round caps. */
 export type FlowSetup = {
   stack: string; commands: FlowCommand[]; allowTools: string[]; allowMcp: string[]; journalDir: string
-  remote: string; branch: string; pluginProject: boolean; caps: Record<CapScope, Caps>; sessionCap: number
+  remote: string; branch: string; pluginProject: boolean; caps: Record<CapScope, Caps>
+  /** Older setups only; not read any more (no cost cap since 2026-10-20). */
+  sessionCap?: number
 }
 /** Each approved feature (P3): its key (counters, carried across re-plans) and Files, which red scope and packs read
  * without parsing the plan again. */
@@ -42,7 +45,7 @@ export type FlowRecord = {
   feature?: string; blocked?: Blocked; setup?: FlowSetup; features?: FeatureFiles[]; judge?: JudgeMark
   /** The owner command the flow waits for (flow.ts afterPass). */
   awaiting?: string
-  /** The flow USD cap frozen at P3, and what the flow's turns have spent so far. */
+  /** `flowCap`: older records only, not read any more (no cost cap since 2026-10-20); `spent`: what the flow's turns have spent so far. */
   flowCap?: number; spent?: number
   /** The number of the last ticket issued in this flow: ids count on past the tickets a seal dropped, so one never comes
    * round again (dry run 16, D12). Absent in older records, which count the tickets they hold. */
@@ -60,7 +63,11 @@ export type FlowRecord = {
   /** The highest number a finding id has had, per prefix (FL, J, CR, SR): a seal drops closed findings, their numbers
    * stay used, so an id never names two findings (the session keeps reviewers' words and disputes by id). */
   lastIds?: Record<string, number>
+  /** `/flow-allow red`: the owner let one debug ticket of `feature` edit its RED test file(s); `used` once that ticket is issued. */
+  redAllow?: RedAllow
 }
+/** `ticket`: the debug ticket that carries it (a re-issue after a restart carries it again). */
+export type RedAllow = { feature: string; reason: string; at: number; used: boolean; ticket?: string }
 /** `corrected`: this round had its one scope correction (§4.5); the next fix-scope finding blocks for the owner. */
 export type ReviewRound = { f: string; tree: string; prev?: string; tickets: string[]; corrected?: boolean }
 /** Every failure is a reason the caller turns into `blocked: could not run (record)`; none is silently passed. */
@@ -80,12 +87,12 @@ const ID8 = /^[0-9a-f]{8}$/
 const VERSION_FILE = /^([0-9a-f]{8})\.v([1-9]\d{0,8})\.json$/
 const END_FILE = /^([0-9a-f]{8})\.end$/
 const LIFECYCLES: readonly string[] = ['active', 'done', 'off']
-const APPROVALS = new Set(['setup', 'baseline', 'plan', 'release', 'waive'])
+const APPROVALS = new Set(['setup', 'baseline', 'plan', 'release', 'waive', 'allow'])
 const SEVERITIES = new Set(['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'])
 export const CLOSED: ReadonlySet<string> = new Set(['resolved', 'accepted-follow-up', 'dropped', 'owner-rejected', 'withdrawn', 'waived'])
 const TICKET_KEYS = new Set(['id', 'f', 'sha', 'nonce', 'tree', 'routedType', 'model', 'used', 'kind', 'toolUseId', 'agentId', 'attested'])
 const TICKET_KINDS = new Set(['review', 'delta', 'fix', 'debug', 'red', 'author'])
-const RECORD_KEYS = new Set(['version', 'flowId', 'repoKey', 'root', 'branch', 'lifecycle', 'phase', 'task', 'lock', 'approvals', 'frozen', 'counters', 'findings', 'tickets', 'seals', 'redTestHash', 'verifiedTree', 'verifyMdHash', 'releaseTree', 'feature', 'blocked', 'setup', 'features', 'judge', 'awaiting', 'flowCap', 'spent', 'round', 'fixMap', 'lastIds', 'selfBlocks', 'assumptions', 'spendBy', 'ticketSeq'])
+const RECORD_KEYS = new Set(['version', 'flowId', 'repoKey', 'root', 'branch', 'lifecycle', 'phase', 'task', 'lock', 'approvals', 'frozen', 'counters', 'findings', 'tickets', 'seals', 'redTestHash', 'verifiedTree', 'verifyMdHash', 'releaseTree', 'feature', 'blocked', 'setup', 'features', 'judge', 'awaiting', 'flowCap', 'spent', 'round', 'fixMap', 'lastIds', 'selfBlocks', 'assumptions', 'spendBy', 'ticketSeq', 'redAllow'])
 const SCOPES: readonly CapScope[] = ['plan', 'feature', 'verify']
 const MODES = new Set(['must-pass', 'no-new-failures'])
 
@@ -121,7 +128,7 @@ const strings = (v: unknown): boolean => Array.isArray(v) && v.every(str)
 const optional = (v: unknown, ok: (x: unknown) => boolean): boolean => v === undefined || ok(v)
 const caps = (v: unknown): boolean => isObject(v) && SCOPES.every(s => { const c = v[s]; return isObject(c) && count(c.e) && count(c.r) && count(c.d) })
 const setupOk = (s: unknown): boolean => isObject(s) && str(s.stack) && each(s.commands, c => str(c.id) && strings(c.argv) && str(c.runner) && MODES.has(c.mode as string))
-  && strings(s.allowTools) && strings(s.allowMcp) && [s.journalDir, s.remote, s.branch].every(str) && typeof s.pluginProject === 'boolean' && caps(s.caps) && num(s.sessionCap)
+  && strings(s.allowTools) && strings(s.allowMcp) && [s.journalDir, s.remote, s.branch].every(str) && typeof s.pluginProject === 'boolean' && caps(s.caps) && optional(s.sessionCap, num)
 const CHECKS: ReadonlyArray<readonly [string, (r: Obj) => boolean]> = [
   ['keys', r => Object.keys(r).every(k => RECORD_KEYS.has(k))],
   ['version', r => Number.isInteger(r.version) && (r.version as number) >= 1 && (r.version as number) <= MAX_VERSION],
@@ -131,7 +138,7 @@ const CHECKS: ReadonlyArray<readonly [string, (r: Obj) => boolean]> = [
   ['approvals', r => each(r.approvals, a => APPROVALS.has(a.kind as string) && str(a.echoHash) && num(a.at) && str(a.origin))],
   ['hashes', r => values(r.frozen, str) && values(r.redTestHash, str) && [r.verifiedTree, r.verifyMdHash, r.releaseTree].every(v => v === undefined || str(v))],
   ['counters', r => values(r.counters, c => isObject(c) && count(c.e) && count(c.r) && count(c.d) && typeof c.retried === 'boolean')],
-  ['findings', r => each(r.findings, f => [f.id, f.f, f.rubricId, f.loc, f.status].every(str) && SEVERITIES.has(f.sev as string))],
+  ['findings', r => each(r.findings, f => [f.id, f.f, f.rubricId, f.loc, f.status].every(str) && SEVERITIES.has(f.sev as string) && optional(f.sig, str))],
   ['tickets (ticket text is never stored)', r => each(r.tickets, t => Object.keys(t).every(k => TICKET_KEYS.has(k)) && [t.id, t.f, t.sha, t.nonce, t.tree, t.routedType, t.model].every(str) && typeof t.used === 'boolean' && (t.attested === undefined || typeof t.attested === 'boolean') && (t.kind === undefined || (typeof t.kind === 'string' && TICKET_KINDS.has(t.kind))))],
   ['seals', r => each(r.seals, s => str(s.f) && str(s.tree) && count(s.tickets) && Array.isArray(s.evalIds) && Array.isArray(s.followups) && values(s.findings, count))],
   ['feature', r => optional(r.feature, str)],
@@ -148,6 +155,7 @@ const CHECKS: ReadonlyArray<readonly [string, (r: Obj) => boolean]> = [
   ['selfBlocks', r => optional(r.selfBlocks, count)],
   ['spendBy', r => optional(r.spendBy, m => values(m, num))],
   ['assumptions', r => optional(r.assumptions, a => values(a, strings))],
+  ['redAllow', r => optional(r.redAllow, a => isObject(a) && str(a.feature) && str(a.reason) && num(a.at) && typeof a.used === 'boolean' && optional(a.ticket, str))],
 ]
 
 /** Blocks the agent's own work can cause (plan §3.2): verify.md counts them. An owner edit of the same files counts

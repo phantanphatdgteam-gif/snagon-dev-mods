@@ -3,7 +3,7 @@
 // the frozen hashes, and the baseline echo into the boundary view (GAP-step9-7). A red command waits for the owner (S4),
 // who accepts it as no-new-failures; one whose failures cannot be read can only be fixed or dropped.
 import { fill } from '../flow/data/templates'
-import { TYPESCRIPT } from '../flow/data/stacks'
+import type { Stack } from '../flow/data/types'
 import { counts, failures, type Report } from '../flow/parse'
 import { afterPass, type Next } from './flow'
 import { git, gitPaths, ignoredSet } from './flow-git'
@@ -13,8 +13,9 @@ import { viewText } from './flow-pack'
 import { sha256 } from './flow-review'
 import { activeView, blockFlow, dropView, mutateSession, type FlowHost } from './flow-host'
 import { flowDir, updateRecord, type Approval, type FlowCommand, type FlowRecord, type UpdateResult } from './flow-state'
-import { judgedRun } from './flow-run'
+import { judgedBlock, judgedRun } from './flow-run'
 import { writeView } from './flow-setup'
+import { stackOf } from './stacks/index'
 
 /** unreadable: failing with no failure the stack can read, or a report that was asked for and is missing. */
 export type BaseState = 'green' | 'red' | 'unreadable'
@@ -23,11 +24,11 @@ export type BaselineFile = { baseSha: string; commands: Record<string, BaseEntry
 export const baselinePath = (home: string, flowId: string): string => `${flowDir(home)}/${flowId}.baseline.json`
 export const BOUNDARY_S3 = '.snagon/flow/boundary-S3.md'
 const SHOWN_SIGS = 5
-/** What the ignored-file set leaves out (§5.3): dependency and build output folders and globs. */
-export const IGNORED_SKIP = {
-  dirs: [...TYPESCRIPT.dependencyDirs, ...TYPESCRIPT.buildOutputs.filter(x => x.endsWith('/'))],
-  globs: TYPESCRIPT.buildOutputs.filter(x => x.startsWith('*')),
-}
+/** What the ignored-file set leaves out (§5.3): the stack's dependency and build output folders and globs. */
+export const ignoredSkip = (stack: Stack): { dirs: string[]; globs: string[] } => ({
+  dirs: [...stack.dependencyDirs, ...stack.buildOutputs.filter(x => x.endsWith('/'))],
+  globs: stack.buildOutputs.filter(x => x.startsWith('*')),
+})
 
 const pointerOf = (next: Next): Partial<FlowRecord> => {
   if ('done' in next) throw new Error('flow: the setup cannot finish the flow')
@@ -35,11 +36,11 @@ const pointerOf = (next: Next): Partial<FlowRecord> => {
 }
 const settled = (out: UpdateResult): void => { dropView(); if (!out.ok) throw new Error(`flow: the record could not be written (${out.reason})`) }
 
-function entryOf(cmd: FlowCommand, run: RunOutput, report: Report | null | undefined): BaseEntry {
-  const sigs = report ? reportSignatures(report, cmd.runner) : report === null ? null : failures(run.output, TYPESCRIPT, cmd.runner)
+function entryOf(stack: Stack, cmd: FlowCommand, run: RunOutput, report: Report | null | undefined): BaseEntry {
+  const sigs = report ? reportSignatures(report, cmd.runner) : report === null ? null : failures(run.output, stack, cmd.runner)
   const state: BaseState = report === null || (run.exitCode !== 0 && !sigs?.length && !report) ? 'unreadable' : run.exitCode === 0 && !sigs?.length ? 'green' : 'red'
   return {
-    signatures: sigs ?? [], counts: report ? report.counts : counts(run.output, TYPESCRIPT, cmd.runner), exitCode: run.exitCode, ms: run.ms, state,
+    signatures: sigs ?? [], counts: report ? report.counts : counts(run.output, stack, cmd.runner), exitCode: run.exitCode, ms: run.ms, state,
     ...(report ? { passed: report.tests.filter(t => t.status === 'passed').map(testKey), runErrors: runErrorsOf(run.output) + (report.runtimeErrors ?? 0) } : {}),
   }
 }
@@ -58,16 +59,16 @@ export function baselineEcho(h: Pick<FlowHost, 'language' | 'address'>, base: Ba
 
 /** S3 (flow_check): every command judged at HEAD; the side file, the frozen hashes, the boundary view, then S4 or P1. */
 export async function runBaseline(h: FlowHost, r: FlowRecord): Promise<void> {
-  const commands: Record<string, BaseEntry> = {}
+  const commands: Record<string, BaseEntry> = {}, stack = stackOf(r).data
   for (const cmd of r.setup?.commands ?? []) {
     const out = await judgedRun(h, r, cmd, MAX_RUN_MS)
-    if (!out.ok) return void (await blockFlow(h, r.flowId, out.reason === 'tooSlow' ? { reason: 'tooSlow', vars: { command: cmd.id, limit: `${MAX_RUN_MS / 60_000} min` } } : { reason: 'couldNotRun', vars: { detail: `${cmd.id}: ${out.detail}` } }))
-    commands[cmd.id] = entryOf(cmd, out.run, out.report)
+    if (!out.ok) return void (await blockFlow(h, r.flowId, judgedBlock(cmd, out, `${MAX_RUN_MS / 60_000} min`)))
+    commands[cmd.id] = entryOf(stack, cmd, out.run, out.report)
   }
   const head = (await git(h.io, r.root, ['rev-parse', '--verify', '-q', 'HEAD^{commit}'])).stdout.trim()
   const base: BaselineFile = { baseSha: /^[0-9a-f]{40,64}$/.test(head) ? head : 'none', commands }
   const text = `${JSON.stringify(base, null, 1)}\n`, sha = await sha256(text)
-  const ignored = (await ignoredSet(h.io, await gitPaths(h.io, r.root), IGNORED_SKIP)).hash
+  const ignored = (await ignoredSet(h.io, await gitPaths(h.io, r.root), ignoredSkip(stack))).hash
   await h.io.write(baselinePath(h.home, r.flowId), text)
   const echo = baselineEcho(h, base, sha)
   await writeView(h, BOUNDARY_S3, [echo.title, ...echo.lines].join('\n'))

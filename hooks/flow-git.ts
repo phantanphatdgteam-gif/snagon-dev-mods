@@ -5,9 +5,11 @@
 // from --git-common-dir/--git-path, so linked worktrees work. Untrusted results throw or come back as a reason.
 import { hashOf, type Io, type RunResult } from './session'
 import { publishReason, type GitRead } from './gate'
+import type { Stack } from '../flow/data/types'
 
 export const HARDENED_ENV: Readonly<Record<string, string>> = { GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', GIT_TERMINAL_PROMPT: '0', GIT_NO_REPLACE_OBJECTS: '1' }
-const HARDENED = ['-c', 'core.fsmonitor=false', '-c', 'core.attributesFile=/dev/null', '-c', 'core.hooksPath=/dev/null', '-c', 'core.quotepath=off']
+// diff.suppressBlankEmpty would print a blank context line as an empty line, which the scan's diff reader drops
+const HARDENED = ['-c', 'core.fsmonitor=false', '-c', 'core.attributesFile=/dev/null', '-c', 'core.hooksPath=/dev/null', '-c', 'core.quotepath=off', '-c', 'diff.suppressBlankEmpty=false']
 const NETWORK = ['-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null', '-c', 'core.quotepath=off']
 /** Host variables that redirect git or inject config; the network calls keep the ssh and askpass ones. */
 const REDIRECT = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_NAMESPACE', 'GIT_EXEC_PATH', 'GIT_CONFIG', 'GIT_CONFIG_PARAMETERS', 'GIT_CONFIG_COUNT', 'GIT_ATTR_SOURCE', 'GIT_REPLACE_REF_BASE']
@@ -27,6 +29,40 @@ const unset = (names: readonly string[], keep: Record<string, string>): string[]
 export function git(io: Io, cwd: string, args: readonly string[], o: { env?: Record<string, string>; config?: readonly string[]; stdin?: string } = {}): Promise<RunResult> {
   const env = { ...HARDENED_ENV, ...o.env }
   return io.run([...unset([...REDIRECT, ...LOCAL_ONLY], env), 'git', ...HARDENED, ...(o.config ?? []).flatMap(c => ['-c', c]), ...args], { cwd, timeoutMs: GIT_TIMEOUT_MS, env, stdin: o.stdin })
+}
+/** The git settings every stack's command sources hold (GAP-R2-0.6-33): the config keys that run or route commands
+ * (filters, aliases, remotes, push and url rewrites), the repository's info/exclude and the worktree's config. */
+export async function gitKeyHashes(io: Io, p: GitPaths): Promise<Record<string, string>> {
+  const keys = await git(io, p.top, ['config', '--null', '--get-regexp', '^(filter|alias|remote|push|url)\\.'])
+  if (keys.exitCode > 1) throw new Error('git config failed')
+  const file = (f: string): Promise<string> => io.read(f).then(hashOf, () => 'absent')
+  return { 'git:config': hashOf(keys.exitCode === 0 ? keys.stdout : ''), 'git:info/exclude': await file(`${p.commonDir}/info/exclude`), 'git:config.worktree': await file(`${p.gitDir}/config.worktree`) }
+}
+/** The ignored files a stack's runner can still load (NK-09, GAP-R2-0.6-11), by content, keyed by root-relative path:
+ * the stack's `loadable` globs at any depth, outside its dependency and build-output folders, hidden folders and the `skip` folders. A
+ * file that cannot be read is `unreadable`, which a later read never matches. One mechanism for every stack. */
+export async function ignoredLoadable(io: Io, p: GitPaths, stack: Stack, skip: readonly string[] = []): Promise<Record<string, string>> {
+  // ASSUMPTION(GAP-R2-0.6-53): hidden folders are left out too (flow's .snagon, the agents' and tools' own folders):
+  // Python cannot import from them and pytest does not collect them; their tools rewrite them while a flow runs
+  // at any depth (a monorepo builds in each package); a stack whose closure can import from one truncates there instead
+  const dirs = [...stack.dependencyDirs, ...stack.buildOutputs.filter(x => x.endsWith('/')), '.*', ...skip].map(d => d.replace(/\/+$/, ''))
+  const excludes = [...dirs.map(d => `:(exclude,glob)**/${d}/**`), ...stack.buildOutputs.filter(x => x.startsWith('*')).flatMap(g => [`:(exclude,glob)**/${g}`, `:(exclude,glob)**/${g}/**`])]
+  const names = (await out(io, p.top, ['ls-files', '-z', '-o', '-i', '--exclude-standard', '--', ...stack.loadable.map(g => `:(glob)**/${g}`), ...excludes])).split('\0').filter(Boolean)
+  const hashes: Record<string, string> = {}
+  for (const rel of [...new Set(names)].sort()) hashes[rel] = await io.read(`${p.top}/${rel}`).then(hashOf, () => 'unreadable')
+  return hashes
+}
+/** Each file's text at `tree` (a commit or flow's tree of the worktree), for the scans: a file not in it is left out; a
+ * file over git's 4 MiB output throws (the scan cannot read it whole). */
+export async function blobsAt(io: Io, p: GitPaths, tree: string, paths: readonly string[]): Promise<Record<string, string>> {
+  const texts: Record<string, string> = {}
+  for (const path of new Set(paths)) {
+    const r = await git(io, p.top, ['cat-file', 'blob', `${tree}:${path}`])
+    if (r.exitCode !== 0) continue
+    if (r.isStdoutTruncated) throw new Error(`flow: ${path} is over 4 MiB, too large to scan`)
+    texts[path] = r.stdout
+  }
+  return texts
 }
 async function out(io: Io, cwd: string, args: readonly string[], o: { env?: Record<string, string>; config?: readonly string[]; noneIs?: number; stdin?: string } = {}): Promise<string> {
   const r = await git(io, cwd, args, o)

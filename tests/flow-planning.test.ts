@@ -4,9 +4,13 @@ import { checkVerdict, liveCall, noteMode } from '../hooks/flow-live'
 import { forgetAgents, noteSpawned, RUN_DEADLINE_MS, spawnHook } from '../hooks/flow-ticket'
 import { emptySession } from '../hooks/flow-host'
 import { featureKey } from '../hooks/flow-plan'
-import { applyPlan, flowCapAtP3 } from '../hooks/flow-planning'
+import { applyPlan } from '../hooks/flow-planning'
 import { sha256 } from '../hooks/flow-review'
 import { flowStatus } from '../hooks/flow-turn'
+import { canonical } from '../hooks/flow-owner'
+import { hashOf } from '../hooks/session'
+import { ROUTING } from '../flow/data/routing'
+import { TYPESCRIPT } from '../flow/data/stacks/typescript'
 import { METHOD_HEAD, OVERRIDES_TEXT, ROOT } from './flow-fakes'
 import { agentEnds, agentLaunch, editRecord, latest, run, toS3, world, type W } from './flow-drive'
 
@@ -189,12 +193,12 @@ describe('flow-planning: P1, the planner ticket', () => {
     expect(latest(w)?.ticketSeq).toBe(5)
   })
 
-  test('S13-3: a cap /flow-retry cost raised before P3 is kept at P3; the echo shows that figure', async () => {
+  test('a flow far past the old cost caps (flow $100, session $100) still starts the planner at P1', async () => {
     const w = await atP1()
-    const r = latest(w)
-    if (!r) throw new Error('no record')
-    expect(flowCapAtP3(r, 3)).toBe(11)
-    expect(flowCapAtP3({ ...r, counters: { ...r.counters, cost: { e: 0, r: 0, d: 0, retried: true } }, flowCap: 90 }, 3)).toBe(90)
+    editRecord(w, r => ({ ...r, spent: 100, flowCap: 5 })) // an older record may still hold flowCap: it is not read
+    w.setUsd(100)
+    expect((await run(w, 'flow-plan add a sum function')).text).toContain('The planner starts now')
+    expect(latest(w)?.tickets[0]).toMatchObject({ id: 'T-1', f: 'plan', routedType: 'planner' })
   })
 
   test('two spawns of one ticket at once: exactly one is rewritten', async () => {
@@ -227,6 +231,38 @@ describe('flow-planning: P2 lint and the plan echo', () => {
     expect(latest(w)?.blocked).toMatchObject({ reason: 'planLint', vars: { count: '2', first: expect.stringContaining('AC-001 is Required but no feature covers it') } })
   })
 
+  test('plans the owner rejects use the edit rounds too: past the cap the flow blocks `cap` for the plan, and /flow-retry plan gives one more round (owner decision 2026-10-20)', async () => {
+    const w = await atP1()
+    await run(w, 'flow-plan add a sum function')
+    for (const id of ['T-1', 'T-2', 'T-3']) {
+      await planner(w, id, ended('Plan written.'), GOOD)
+      await flowCheck(w.host)
+      expect(latest(w)).toMatchObject({ task: 'P3', awaiting: '/flow-plan' })
+      await run(w, 'flow-reject plan')
+      const said = (await run(w, 'flow-plan add a sum function')).text
+      // the owner is told the planner starts only when it does (code review of the plan-cap fix)
+      if (id === 'T-3') expect([said.includes('The planner starts now'), said.includes('used all its')]).toEqual([false, true])
+    }
+    // a lint block here would say "0 lint errors" (S7 run 1 of 2026-10-20)
+    expect(latest(w)?.blocked).toEqual({ reason: 'cap', vars: { scope: 'plan', kind: 'edit' } })
+    expect(latest(w)?.tickets.map(t => t.id)).toEqual(['T-1', 'T-2', 'T-3'])
+    await run(w, 'flow-retry plan')
+    expect(latest(w)?.blocked).toBeUndefined()
+    await run(w, 'flow-plan add a sum function')
+    expect(latest(w)?.tickets.map(t => t.id)).toEqual(['T-1', 'T-2', 'T-3', 'T-4'])
+  })
+
+  test('answers without the nonce line use the edit rounds as well: past the cap the flow blocks `cap` for the plan', async () => {
+    const w = await atP1()
+    await run(w, 'flow-plan add a sum function')
+    for (const id of ['T-1', 'T-2', 'T-3']) {
+      await planner(w, id, () => 'Plan written.', GOOD)
+      await flowCheck(w.host)
+    }
+    expect(latest(w)?.blocked).toEqual({ reason: 'cap', vars: { scope: 'plan', kind: 'edit' } })
+    expect(latest(w)?.tickets.map(t => t.id)).toEqual(['T-1', 'T-2', 'T-3'])
+  })
+
   test('an answer without the nonce line is not attested: the plan is not linted and a new ticket goes out', async () => {
     const w = await atP1()
     await run(w, 'flow-plan add a sum function')
@@ -247,14 +283,20 @@ describe('flow-planning: P2 lint and the plan echo', () => {
     const echo = w.session().value?.pending.plan
     expect(echo?.title).toBe('Plan for the project owner to approve')
     expect(echo?.lines).toContain('### F-01: Add numbers')
+    expect(echo?.lines.join('\n')).not.toMatch(/cost|cap/i) // no cost cap line in the echo (owner decision 2026-10-20)
+    editRecord(w, x => ({ ...x, redAllow: { feature: 'F-01', reason: 'left from an older plan', at: 1, used: false } }))
     expect((await run(w, `flow-approve plan ${echo?.hash.slice(0, 8) ?? ''}`)).text).toContain('Plan approved: 1 features')
     const r = latest(w)
-    expect(r).toMatchObject({ phase: 'build', task: 'B1', feature: 'F-01', awaiting: '/flow-build', flowCap: 5 }) // (2 × 1 + 1.2) × 1.5, whole dollars up (plan §9, step 13)
+    expect(r).toMatchObject({ phase: 'build', task: 'B1', feature: 'F-01', awaiting: '/flow-build' })
+    expect(r && 'redAllow' in r).toBe(false) // a new plan starts with no RED test allowance
+    expect(r?.flowCap).toBeUndefined() // the approval freezes no cost cap any more
     const key = featureKey({ title: 'Add numbers', acs: ['AC-001'] })
     expect(r?.features).toEqual([{ id: 'F-01', key, files: ['src/add.ts', 'tests/add.test.ts'] }])
     expect(r?.counters[key]).toEqual({ e: 0, r: 0, d: 0, retried: false })
     expect(r?.frozen.plan).toMatch(/^[0-9a-f]{16}$/)
     expect(Object.keys(r?.frozen ?? {})).toEqual(expect.arrayContaining(['rubric:code', 'rubric:security', 'routing', 'acceptance']))
+    // the frozen routing covers the stack's own agents too (R2 step-1 security review)
+    expect(r?.frozen.routing).toBe(hashOf(canonical({ ...ROUTING, stack: TYPESCRIPT.routing })))
     expect(r?.approvals.map(a => a.kind)).toEqual(['setup', 'plan'])
   })
 

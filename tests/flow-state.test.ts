@@ -5,6 +5,7 @@ import {
   lockStatus, claimLock, heartbeat, releaseLock, shouldPersistHeartbeat,
   LOCK_STALE_MS, RECORD_LIMIT, WRITE_ATTEMPTS, TEMP_STALE_MS, MAX_VERSION, type FlowRecord,
 } from '../hooks/flow-state'
+import { RECORD_053 } from './fixtures/record-053'
 
 const HOME = '/home/u'
 const ID = 'a1b2c3d4'
@@ -282,6 +283,7 @@ describe('flow record', () => {
       ['unknown lifecycle', { ...good, lifecycle: 'paused' }],
       ['path in the id', { ...good, flowId: '../../x' }],
       ['unknown severity', { ...good, findings: [{ id: 'X', f: 'F', rubricId: 'C', sev: 'BLOCKER', loc: 'l', status: 's' }] }],
+      ['line hash not text', { ...good, findings: [{ id: 'X', f: 'F', rubricId: 'C', sev: 'HIGH', loc: 'l', status: 's', sig: 5 }] }],
       ['unknown approval', { ...good, approvals: [{ kind: 'all', echoHash: 'h', at: 1, origin: 'composer' }] }],
       ['an array', []],
       ['negative self-caused count', { ...good, selfBlocks: -1 }],
@@ -329,5 +331,13 @@ describe('flow record', () => {
     expect(repoKeyOf('/p/.git')).toMatch(/^[0-9a-f]{8}$/)
     expect(newFlowId('9f2c')).toMatch(/^[0-9a-f]{8}$/)
     expect(newFlowId('9f2c')).not.toBe(newFlowId('9f2d'))
+  })
+
+  test('an older record with flowCap, counters.cost and setup.sessionCap still loads; a setup without sessionCap loads too (no cost cap since 2026-10-20)', () => {
+    const older = { ...RECORD_053, flowCap: 90, spent: 12, counters: { ...RECORD_053.counters, cost: { e: 0, r: 0, d: 0, retried: true } } }
+    const r = parseRecord(JSON.stringify(older))
+    expect(r).toMatchObject({ flowCap: 90, spent: 12, setup: { sessionCap: 15 }, counters: { cost: { retried: true } } })
+    expect(parseRecord(JSON.stringify({ ...RECORD_053, setup: { ...RECORD_053.setup, sessionCap: undefined } })).setup?.sessionCap).toBeUndefined()
+    expect(() => parseRecord(JSON.stringify({ ...RECORD_053, setup: { ...RECORD_053.setup, sessionCap: 'x' } }))).toThrow()
   })
 })

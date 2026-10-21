@@ -45,6 +45,7 @@ criterion (D7).
 | 18 | released to the local remote, unattended, on D10 + D11 (0.5.2): F-03's fix got one scope correction and no owner command (14 commands in all, 19 in run 17); the release echo 14 lines; a second fix and delta round came from two reply lines the parsers dropped (D14, D15) | 8.82 | 27 | 16 |
 | 19 | released to the local remote, unattended, on 0.5.2 as published (D14, D15 and the review fixes): the fix agents again wrote FIX lines with absolute paths and the ranges were read (`src/sum.ts:1-10`, `src/stats.ts:13-13`, `17-21`), no fix-scope finding in the whole run (every fix round of runs 12–18 had one), every delta verdict landed (F-02 and F-03 sealed after one fix and one delta each), no refusal by a guard; 14 owner commands | 9.18 | 26 | 19 |
 | 20 | released to the local remote, unattended, on 0.5.4 before its publish (the filtered PATH, `(deny file-link)` in the judge, the hooks path in H_cfg, the setup approval bound to H_cfg; 2026-10-18): no block, no nudge, no false `tampered`; vitest, eslint and tsc ran under the new judge profile; the harness typed `/flow-ship` again once, when the release line was not yet on the pane | 6.61 / 5.49 | 17 | 13 |
+| 21 | released to the local remote, unattended, on 0.6.0 at R2 step 1 (the stack registry: TypeScript data and code behind `StackEntry`, the core reaching it only through `hooks/stacks/index.ts`, the reviewer routed by `ownsFile`, the judge env and denyRead in one fixed order; 2026-10-18): no block, no nudge, no false `tampered`; 15 owner commands; the harness typed `/flow-ship` again once, as in run 20 | 7.02 / 5.75 | 16 | 13 |
 
 Run 15 by phase: setup $0.21, plan $0.86, F-01 $1.01, F-02 $1.38, F-03 $3.69 (the fix round, three waivers and the delta),
 verify $0.42, ship ≈ $0.85; the card 220 characters a prompt, 281 at most; the judge's baseline `test` 656 ms under
@@ -61,6 +62,10 @@ took 654–658 ms under `sandbox-exec` against 726 ms run directly: no measurabl
 9–11 minutes; verify (V1–V8) 20 s; commit, ship and release 3 minutes.
 
 ## Caps (plan §9, GAP-step13-10)
+
+Superseded on 2026-10-20: the project owner removed every cost cap (no session cap, no flow cap, no phase notice; the
+flow only measures and shows what it spends). What follows is the measurement the caps were derived from; it stays as
+the cost record of the 0.5.x dry runs.
 
 - session = max × 1.5: the largest session seen was $9.10 (run 7, with its extra rounds) → the session cap stays
   $15.
@@ -100,3 +105,95 @@ Also seen and worth the owner's eye: a command typed while main's turn runs is q
 the file existed were refused by the guard (four denials in run 11, correct but noisy); the fixture repository
 had no git identity, so run 11's release commit carried the machine's (a harness gap, fixed); in run 11 main
 read verify.md against the reviews, found the dropped findings (D8) and refused to ship on its own.
+
+## F28 trial: the strict judge profile (AC-F28-1; R2 step 11, 2026-10-19)
+
+`FLOW_STRICT_TABLE=1 node tests/judge-strict.check.mjs` runs each stack's judged commands as the judge runs them (the
+stack's judged form and environment, the launcher, the filtered PATH, the run folder, the reap), once under the live
+judge profile and once under `judgeProfileStrict`, which flow never uses in R2. The strict profile is
+`(deny default)`, the fixed rules of Claude Code's sandbox runtime without the channels the live judge closes, the
+runtime's read rule (`(allow file-read*)`), then the live judge's own rules (GAP-R2-0.6-102). The base is
+`@anthropic-ai/sandbox-runtime` 0.0.80 from npm (Apache-2.0, published 2026-10-16, tarball
+`sha512-WG4P8faU/JDH90I8NLUBPmg7e72zhanlW3AVCD0OF06JCtId9IDFewFgv4YRvHLcnn//h1r6a1AMosBsMLpxnA==`),
+`dist/sandbox/macos-sandbox-utils.js` `generateSandboxProfile` with no option on. Only `(deny default)` carries the
+run's tag, so the tagged denials in the system log are exactly what the strict way takes away beyond the live judge
+(GAP-R2-0.6-103). Both fixtures come from `run.sh fixture`: `run.sh fixture <dir>` and `run.sh fixture <dir> python`
+(GAP-R2-0.6-104; the Python eval fixture arrived with step 12, and the table was taken again on it on 2026-10-19 at
+23:40: the same table, with that fixture's third test in the pytest row).
+
+Taken with macOS 27.0.1; node v26.10.0, vitest 3.2.7, eslint 9.39.5, typescript 5.9.3; Python 3.14.8, pytest 9.1.1,
+ruff 0.17.1, mypy 2.4.0 (compiled). Taken six times, the last five after the code review's rounds (the caches moved
+out of the project before each run and TZ passed, as `judgedRun` does; the log read until two reads agree; "Same
+result" compares what the judge reads from each run: pass, counts and the failures as the judge matches them, by their
+normalized signature): the same table each time, except that node's `net.link.addr` refusal in the lint run showed in
+five of the six.
+
+| Stack | Command (as the judge runs it) | Live profile | Strict profile | Same result | Refused by deny default (distinct targets) |
+|---|---|---|---|---|---|
+| typescript | test: `npm test` | exit 0, report read, 3 passed | exit 0, report read, 3 passed | yes | sysctl-read ×2, system-info ×2 |
+| typescript | typecheck: `npm run typecheck` | exit 0 | exit 0 | yes | sysctl-read ×1, system-info ×2 |
+| typescript | lint: `npm run lint` | exit 1, 1 failure(s) | exit 1, 1 failure(s) | yes | sysctl-read ×1, system-info ×2 |
+| python | test: `.venv/bin/pytest` | exit 0, report read, 3 passed | exit 0, report read, 3 passed | yes | sysctl-read ×1, system-info ×1 |
+| python | typecheck: `.venv/bin/mypy src` | exit 0 | exit 0 | yes | sysctl-read ×1, system-info ×1 |
+| python | lint: `.venv/bin/ruff check` | exit 1, 1 failure(s) | exit 1, 1 failure(s) | yes | sysctl-read ×1, system-info ×1 |
+
+Refused by deny default, per command (the processes in brackets):
+
+- typescript test: `sysctl-read kern.iossupportversion` (bash, env, esbuild, node, sh, sysctl); `system-info vfs.disk-space` (node); `system-info net.link.addr` (node); `sysctl-read sysctl.oidfmt.6.106` (sysctl)
+- typescript typecheck: `sysctl-read kern.iossupportversion` (bash, env, node, sh); `system-info vfs.disk-space` (node); `system-info net.link.addr` (node)
+- typescript lint: `sysctl-read kern.iossupportversion` (bash, env, node, sh); `system-info vfs.disk-space` (node); `system-info net.link.addr` (node)
+- python test: `sysctl-read kern.iossupportversion` (bash, python3.14, sh); `system-info vfs.disk-space` (python3.14)
+- python typecheck: `sysctl-read kern.iossupportversion` (bash, python3.14, sh); `system-info vfs.disk-space` (python3.14)
+- python lint: `sysctl-read kern.iossupportversion` (bash, ruff, sh); `system-info vfs.disk-space` (ruff)
+
+What it shows:
+
+- All six judged commands give the same result under the strict profile as under the live one (lint is red in both
+  fixtures by design). What deny default refused changed no result: `kern.iossupportversion` (read by every process
+  as it starts), `vfs.disk-space` (node, Python, ruff), `net.link.addr` (node) and one lookup by a `sysctl` process in
+  the vitest run. For these runners the strict way needs nothing added; the switch is decided after R2, with every
+  stack's numbers (AC-F28-2: each language slice runs this check with its own fixture).
+- For one operation, Seatbelt lets a rule with a filter win over a rule without one, whatever their order (five
+  profiles tried at step 11): an earlier `(allow mach-lookup (global-name "com.apple.lsd.mapdb"))` beats a later bare
+  `(deny mach-lookup)`; between two rules with filters the later wins. Taken verbatim, the runtime's base would have
+  opened LaunchServices, `com.apple.SecurityServer` and the `/dev/tty` ioctl that the live judge closes, so the base
+  leaves them out; the check's control puts `lsd.mapdb` back and shows the bare deny no longer refuses it.
+- The live judge profile is unchanged: its bytes were compared before and after the split into `judgeRules`.
+
+## Runner integrity time (R2 0.6.0, AC-RI-4)
+
+The cost of the runner-integrity check the flow repeats before every judged run (`nodeModulesState` for TypeScript,
+`venvState` for Python: the whole `node_modules` or `.venv` read and hashed, plus the interpreter and start-up facts).
+Measured on 2026-10-21 by calling the mod's own functions with a real io on three trees, five runs each, on the
+machine of the other measurements here (macOS, a warm file cache after the first run):
+
+| Tree | Size | Runs (ms) | Median |
+|---|---|---|---|
+| Python fixture (`.venv`: pytest, ruff, mypy) | 99 MB | 366, 357, 362, 365, 360 | 362 ms |
+| TypeScript fixture (`node_modules`: vitest, eslint, tsc) | 64 MB | 464, 447, 457, 455, 443 | 455 ms |
+| project 535 (`.venv`, three approved commands) | the real project venv | 1592, 560, 543, 553, 538 | 553 ms |
+
+The first run on project 535 was 1.6 s with a cold file cache; every later run was 0.54 to 0.56 s. The 2026-10-19
+measurement on the same project (534 to 562 ms per runner state, step 6) agrees. All three are far under the 10 s the
+spec set as the line above which the project owner is told before a release. No run was truncated and none refused a
+tree that was unchanged (`problems` stayed empty). Not measured: a tree with several workspace packages.
+
+## Dry runs on the final code (2026-10-21, R2 0.6.0, main on Haiku, plugin `d1661818`)
+
+The fixture dry run of each stack on the code that ships (the three small fixes of the same day included; only
+documents changed after it), unattended, the harness typing the owner's commands. The TypeScript run was repeated
+twice after its first run stopped.
+
+| Stack | Run | Outcome | USD | Main turns | Minutes |
+|---|---|---|---|---|---|
+| TypeScript | `dryrun-1-085734` | stopped at F-03, B4: `couldNotRun`, "lint: a process the judged command started is still active (pid 41844)"; the B3 judge before it was green | 2.74 | 17 | 10 |
+| TypeScript | `dryrun-1-092349` | released to the local remote | 3.19 | 21 | 12 |
+| TypeScript | `dryrun-2-093615` | released to the local remote | 3.09 | 21 | 12 |
+| Python | `dryrun-1-090752` | released to the local remote | 2.97 | 21 | 13 |
+
+The stop in the first TypeScript run is the survivor check of 0.6.0 (NK-11): after a judged command the flow ends the
+command's process group and blocks `couldNotRun` while a process the command started is still active, so that run is
+never trusted. The owner's exit is `/flow-retry check`; the harness does not type it, so the run ended there. It did
+not happen in the other two TypeScript runs on the same code, in the Python run, or in the two dry runs of 2026-10-20
+(earlier code). Its cause is not established: the mod records the pid only, never a command line. The project owner
+decided the same day to record it as a known risk and release 0.6.0; the cause is to be found for 0.7.0.

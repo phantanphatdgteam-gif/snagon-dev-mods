@@ -2,11 +2,14 @@ import { describe, expect, test } from 'claude-code/testing'
 import type { Io, RunResult } from '../hooks/session'
 import { readReport, type Signature } from '../flow/parse'
 import { parseDiff } from '../hooks/flow-scan'
-import { TYPESCRIPT } from '../flow/data/stacks'
+import { TYPESCRIPT } from '../flow/data/stacks/typescript'
+import { TYPESCRIPT_STACK } from '../hooks/stacks/typescript'
+import { addedTests, declChanges, importsOf, securityForced } from '../hooks/stacks/typescript-tests'
+import { judgedArgv } from '../hooks/stacks/typescript-commands'
 import { VITEST } from './fixtures/runners'
 import { VITEST_REPORT } from './fixtures/reports'
 import {
-  timeoutFor, runJudged, judgeRun, addedTests, importsOf, redCheck, securityForced, outOfScope, pluginIntegrity, newFailures, judgedArgv, declChanges,
+  timeoutFor, runJudged, judgeRun, redCheck, outOfScope, pluginIntegrity, newFailures,
 } from '../hooks/flow-judge'
 
 const sig = (file: string, id: string, message = 'AssertionError: expected 1 to be 2', collection = false): Signature => ({ runner: 'vitest', file, id, message, collection })
@@ -22,7 +25,8 @@ describe('flow judge: running a command', () => {
   })
 
   test('a run that ends is read whole; killed at its timeout is too slow; not started, or either stream cut at 4 MiB, could not run', async () => {
-    expect(await runJudged(fakeRun({ exitCode: 1, stdout: 'out', stderr: 'err' }, 500), ['x'], '/r', 70_000)).toEqual({ ok: true, run: { exitCode: 1, output: 'out\nerr', ms: 500 } })
+    // stdout is kept apart as well: pytest's summary must be its last line (R2 step 3)
+    expect(await runJudged(fakeRun({ exitCode: 1, stdout: 'out', stderr: 'err' }, 500), ['x'], '/r', 70_000)).toEqual({ ok: true, run: { exitCode: 1, output: 'out\nerr', ms: 500, stdout: 'out' } })
     expect(await runJudged(fakeRun(new Error('killed: timed out'), 70_000), ['x'], '/r', 70_000)).toMatchObject({ ok: false, reason: 'tooSlow' })
     expect(await runJudged(fakeRun(new Error('ENOENT'), 5), ['x'], '/r', 70_000)).toMatchObject({ ok: false, reason: 'couldNotRun' })
     expect(await runJudged(fakeRun({ exitCode: 0, stdout: 'x', stderr: '', isStdoutTruncated: true }, 5), ['x'], '/r', 70_000)).toMatchObject({ ok: false, reason: 'couldNotRun' })
@@ -143,7 +147,8 @@ describe('flow judge: pass modes and eval ids', () => {
 describe('flow judge: the RED rule', () => {
   const testDiff = (lines: string[]) => parseDiff([`diff --git a/tests/add.test.ts b/tests/add.test.ts`, 'new file mode 100644', '--- /dev/null', '+++ b/tests/add.test.ts', `@@ -0,0 +1,${lines.length} @@`, ...lines.map(l => `+${l}`)].join('\n'))
   const files = testDiff(["import { add, sub as minus } from '../src/add'", "import { mul } from '../src/mul'", "describe('add', () => {", "  it('AC-001 adds', () => { expect(add(1, 2)).toBe(3) })", '})', "it('AC-002 subtracts', () => { expect(minus(2, 1)).toBe(1) })"])
-  const base = { fTestFiles: ['tests/add.test.ts'], fAcs: ['AC-001', 'AC-002'], newFiles: ['src/add.ts'], stack: TYPESCRIPT }
+  // inStart: never asked for TypeScript (its errors name no module; a package import resolves to null)
+  const base = { fTestFiles: ['tests/add.test.ts'], fAcs: ['AC-001', 'AC-002'], newFiles: ['src/add.ts'], stack: TYPESCRIPT_STACK, inStart: async () => { throw new Error('inStart asked for TypeScript') } }
   const absent = async () => true, present = async () => false
 
   test('added tests (also when the opener wraps to the next line) and imports are read from the diff', () => {

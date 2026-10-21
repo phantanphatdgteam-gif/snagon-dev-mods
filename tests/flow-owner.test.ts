@@ -22,12 +22,16 @@ describe('owner commands: parsing and origin', () => {
     expect(parseOwner('flow-waive', 'check:lint  the old warnings are known ')).toEqual({ name: 'flow-waive', target: 'check:lint', reason: 'the old warnings are known' })
     expect(parseOwner('flow-reject', 'plan')).toEqual({ name: 'flow-reject', what: 'plan' })
     expect(parseOwner('flow-setup', 'test="npx vitest run" tools=+WebFetch mcp=+mcp__github__search_code mcp=+mcp__context7__query-docs')).toEqual({ name: 'flow-setup', overrides: { test: 'npx vitest run' }, tools: ['WebFetch'], mcp: ['mcp__github__search_code', 'mcp__context7__query-docs'] })
+    // AC-STK-15: stack=<id> picks one of several stacks (S1 checks the id); AC-MM-1: a malformed mcp=+ answers the usage, which shows the full form
+    expect(parseOwner('flow-setup', 'stack=python lint=none')).toEqual({ name: 'flow-setup', overrides: { lint: 'none' }, tools: [], mcp: [], stack: 'python' })
+    expect(parseOwner('flow-setup', 'mcp=+github')).toEqual({ error: '/flow-setup [stack=<id>] [test|lint|typecheck|build="<argv>"] [tools=+<Tool>] [mcp=+mcp__<server>__<tool>]' })
     expect(parseOwner('flow-ship', '')).toEqual({ name: 'flow-ship' })
     const bad: Array<[string, string]> = [
       ['flow-approve', 'release 0a1b2c3d'], ['flow-approve', 'plan 0A1B2C3D'], ['flow-approve', 'plan 0a1b2c3'], ['flow-approve', 'all 0a1b2c3d'], ['flow-approve', 'plan 0a1b2c3d extra'],
       ['flow-approve', 'release 0a1b2c3d K7P2Q'], ['flow-decide', 'R-3 maybe'], ['flow-retry', 'everything'], ['flow-waive', 'FL-2'], ['flow-waive', 'rm -rf it'],
       ['flow-reject', 'setup'], ['flow-ship', 'now'], ['flow-setup', 'deploy=rm'], ['flow-setup', 'tools=WebFetch'], ['flow-nope', ''],
       ['flow-setup', 'mcp=+github'], ['flow-setup', 'mcp=+mcp__github'], ['flow-setup', 'mcp=+mcp____x'], // NK-06: the guard matches full tool names only
+      ['flow-setup', 'stack=Python'], ['flow-setup', 'stack=+python'], ['flow-setup', 'stack=python stack=typescript'],
     ]
     for (const [c, a] of bad) expect([c, a, 'error' in parseOwner(c, a)]).toEqual([c, a, true])
   })
@@ -132,7 +136,7 @@ describe('owner commands: the release code', () => {
     const out = await showEcho(u, {}, e, { kind: 'composer' })
     const lines = paneLines('en', 'the project owner', e, paneCode())
     expect(lines.join('\n')).toContain(code)
-    expect(lines.at(-1)).toBe(`Approve by typing: /flow-approve release ${e.hash.slice(0, 8)} ${code}`)
+    expect(lines[1]).toBe(`Approve by typing: /flow-approve release ${e.hash.slice(0, 8)} ${code}`)
     const leaks = [...u.opened, ...(out.pending.release?.lines ?? []), out.pending.release?.title ?? '', shownText('en', 'the project owner', out.shown), refusalText('en', 'the project owner', 'code', 'release')]
     for (const text of leaks) expect([text, text.includes(code)]).toEqual([text, false])
   })
@@ -142,7 +146,8 @@ describe('owner commands: texts in config.language with config.address', () => {
   test('pane and refusal texts use the configured address, else the fallback, in the configured language', async () => {
     expect([addressFor('vi', 'Anh Phát'), addressFor('vi', '  '), addressFor('en', undefined)]).toEqual(['Anh Phát', 'Chủ dự án', 'the project owner'])
     const e = await echoOf('plan')
-    expect(paneLines('vi', 'Anh Phát', { ...e, title: 'Kế hoạch chờ Anh Phát duyệt' }, null).at(-1)).toBe(`Duyệt bằng cách gõ: /flow-approve plan ${e.hash.slice(0, 8)}`)
+    // the approval line comes right after the title, so a long echo cannot push it out of the pane's view (535 trial M-2)
+    expect(paneLines('vi', 'Anh Phát', { ...e, title: 'Kế hoạch chờ Anh Phát duyệt' }, null)).toEqual(['Kế hoạch chờ Anh Phát duyệt', `Duyệt bằng cách gõ: /flow-approve plan ${e.hash.slice(0, 8)}`, ...e.lines])
     expect(refusalText('vi', 'Anh Phát', 'origin', 'plan')).toBe('Lệnh duyệt chỉ có hiệu lực khi Anh Phát tự gõ ở dòng lệnh hoặc qua Remote Control.')
     expect(refusalText('vi', 'Anh Phát', 'originRelease', 'release')).toBe('Lệnh duyệt phát hành chỉ có hiệu lực khi Anh Phát tự gõ ở dòng lệnh.')
     expect(refusalText('vi', 'Anh Phát', 'hash', 'plan')).toBe('Nội dung đã đổi sau khi hiển thị. Chạy lại /flow-plan để xem bản hiện tại.')

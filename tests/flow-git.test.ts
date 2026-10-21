@@ -1,6 +1,8 @@
 import { describe, expect, test } from 'claude-code/testing'
 import type { Io, RunResult } from '../hooks/session'
-import { gitPaths, release, pushFacts, cfgHash, flowTree, urlProblem, writableIncludes, HARDENED_ENV, type GitPaths } from '../hooks/flow-git'
+import { blobsAt, gitPaths, ignoredLoadable, release, pushFacts, cfgHash, flowTree, urlProblem, writableIncludes, HARDENED_ENV, type GitPaths } from '../hooks/flow-git'
+import { hashOf } from '../hooks/session'
+import { PYTHON } from '../flow/data/stacks/python'
 import { publishReason, type GitRead } from '../hooks/gate'
 
 const HEAD = 'a'.repeat(40), TIP = 'b'.repeat(40)
@@ -171,6 +173,42 @@ describe('flow git', () => {
     expect(await publishReason(read, ['HEAD', '--not', '--remotes'])).toContain('output over 4 MiB')
     expect(seen.filter(a => a[0] === 'log').every(a => a.includes('--diff-merges=first-parent'))).toBe(true)
     expect(seen.find(a => a[1] === '-p')).toContain('--no-textconv')
+    expect(seen.find(a => a[1] === '-p')).toEqual(expect.arrayContaining(['--src-prefix=a/', '--dst-prefix=b/'])) // a repo's diff prefix cannot move names
+  })
+
+  test('a .pem of certificates alone is published; a key in it, another block, a key earlier in the range or an unreadable copy is refused (535 trial, M-10)', async () => {
+    const cert = ['-----BEGIN CERTIFICATE-----', 'MIIB'.repeat(16), 'AA==', '-----END CERTIFICATE-----']
+    const key = ['-----BEGIN EC ' + 'PRIVATE KEY-----', 'MHcC'.repeat(16), '-----END EC ' + 'PRIVATE KEY-----']
+    const added = (path: string, lines: string[]) => [`diff --git a/${path} b/${path}`, '--- /dev/null', `+++ b/${path}`, `@@ -0,0 +1,${lines.length} @@`, ...lines.map(l => `+${l}`)].join('\n')
+    const repo = (o: { names?: string; diff?: string; tree?: string; head?: string }): GitRead => async args =>
+      args[0] === 'rev-list' ? { ok: true, out: '1\n' }
+        : args[0] === 'log' ? { ok: true, out: (args.includes('--name-only') ? o.names : o.diff) ?? '' }
+          : args[0] === 'ls-tree' ? { ok: true, out: o.tree ?? '' }
+            : args[0] === 'cat-file' && o.head !== undefined ? { ok: true, out: o.head } : { ok: false, out: '' }
+    const revs = ['HEAD', '--not', '--remotes'], release = { headTree: true }
+    // a release: the certificate sits unchanged in HEAD's tree (the FreeTSA CA of 535's tests)
+    expect(await publishReason(repo({ tree: 't/ca.pem\0src/a.py\0', head: cert.join('\n') }), revs, release)).toBeNull()
+    const keyed = await publishReason(repo({ tree: 't/ca.pem\0', head: [...cert, ...key].join('\n') }), revs, release)
+    expect(keyed).toContain('private path: t/ca.pem')
+    expect(keyed).toContain('A .pem passes only when it holds certificates alone')
+    expect(await publishReason(repo({ tree: 't/ca.pem\0' }), revs, release)).toContain('Could not check')
+    // a key added earlier in the range and a certificate at HEAD: the key still reaches the remote
+    expect(await publishReason(repo({ names: 't/ca.pem\0', diff: added('t/ca.pem', key), tree: 't/ca.pem\0', head: cert.join('\n') }), revs, release)).toContain('private path: t/ca.pem')
+    // a push (no tree): the lines added are the file
+    expect(await publishReason(repo({ names: 't/ca.pem\0', diff: added('t/ca.pem', cert) }), revs)).toBeNull()
+    expect(await publishReason(repo({ names: 't/ca.pem\0', diff: added('t/ca.pem', ['-----BEGIN EC PARAMETERS-----', 'BggqhkjOPQMBBw==', '-----END EC PARAMETERS-----']) }), revs)).toContain('private path: t/ca.pem')
+    expect(await publishReason(repo({ names: 't/ca.pem\0', diff: added('t/ca.pem', cert.slice(1, 3)) }), revs)).toContain('private path: t/ca.pem') // body lines only: unknown
+    // other key formats stay refused by name, whatever they hold
+    expect(await publishReason(repo({ names: 't/ca.key\0', diff: added('t/ca.key', cert) }), revs)).toContain('private path: t/ca.key')
+    // security review: names match exactly, and a changed name must show under its own diff header
+    const header = (name: string, plus: string, lines: string[]) => [`diff --git a/${name} b/${name}`, `--- a/${name}`, plus, `@@ -1 +1,${lines.length} @@`, ...lines.map(l => `+${l}`)].join('\n')
+    const leak = ['db_password=hunter2-prod'] // text no secret pattern catches
+    expect(await publishReason(repo({ names: 't/my ca.pem\0', diff: header('t/my ca.pem', '+++ b/t/my ca.pem\t', leak), tree: 't/my ca.pem\0', head: cert.join('\n') }), revs, release)).toContain('private path: t/my ca.pem')
+    expect(await publishReason(repo({ names: 't/my ca.pem\0', diff: header('t/my ca.pem', '+++ b/t/my ca.pem\t', cert), tree: 't/my ca.pem\0', head: cert.join('\n') }), revs, release)).toBeNull()
+    expect(await publishReason(repo({ names: 't/we"ird.pem\0', diff: header('t/we"ird.pem', '+++ "b/t/we\\"ird.pem"', cert), tree: 't/we"ird.pem\0', head: cert.join('\n') }), revs, release)).toContain('private path: t/we"ird.pem')
+    expect(await publishReason(repo({ names: 't/ca.pem\0t/ca.pem \0', diff: [added('t/ca.pem', cert), header('t/ca.pem ', '+++ b/t/ca.pem \t', leak)].join('\n') }), revs)).toContain('private path: t/ca.pem')
+    // lines removed only (a certificate dropped from a bundle): the header shows, and HEAD's copy decides
+    expect(await publishReason(repo({ names: 't/ca.pem\0', diff: ['diff --git a/t/ca.pem b/t/ca.pem', '--- a/t/ca.pem', '+++ b/t/ca.pem', '@@ -5,4 +4,0 @@', ...cert.map(l => `-${l}`)].join('\n'), tree: 't/ca.pem\0', head: cert.join('\n') }), revs, release)).toBeNull()
   })
 
   test('push facts keep only a hash of config values and the key names, so a token in a url or credential key never reaches the record', async () => {
@@ -190,5 +228,24 @@ describe('flow git', () => {
     expect(repoFacts.repoCredentialKeys).toEqual(['credential.https://***@gitlab.com.helper', 'core.askpass'])
     expect(JSON.stringify(repoFacts).includes(secret)).toBe(false)
     await expect(pushFacts(fakeGit({ 'remote get-url --push origin': ok(`https://${secret}@github.com/o/r.git\n`) }).io, P, 'origin')).rejects.toThrow('token')
+  })
+})
+
+describe('the scans\' git reads (R2 step 4 and 5)', () => {
+  test('blobsAt reads each file at the tree with every call hardened (a blank context line stays one); over 4 MiB throws', async () => {
+    const g = fakeGit({ 'cat-file blob t1:a.py': ok('text\n'), 'cat-file blob t1:big.py': { exitCode: 0, stdout: 'x', stderr: '', isStdoutTruncated: true } })
+    const argvs: string[][] = [], io: Io = { ...g.io, run: async (argv, init) => { argvs.push(argv); return g.io.run(argv, init) } }
+    expect(await blobsAt(io, P, 't1', ['a.py', 'gone.py'])).toEqual({ 'a.py': 'text\n' })
+    expect(argvs[0]).toEqual(expect.arrayContaining(['diff.suppressBlankEmpty=false', 'core.attributesFile=/dev/null']))
+    await expect(blobsAt(io, P, 't1', ['big.py'])).rejects.toThrow('over 4 MiB')
+  })
+
+  test('ignoredLoadable hashes the stack\'s loadable ignored files by content, outside dependency, build, hidden and skipped folders', async () => {
+    const g = fakeGit({ 'ls-files -z -o -i --exclude-standard --': ok('gen/x.py\0b.so\0') })
+    const io: Io = { ...g.io, read: async p => (p === '/r/gen/x.py' ? 'x = 1\n' : Promise.reject(new Error('EACCES'))) }
+    expect(await ignoredLoadable(io, P, PYTHON, ['__pycache__'])).toEqual({ 'b.so': 'unreadable', 'gen/x.py': hashOf('x = 1\n') })
+    const key = g.calls[0]?.key ?? ''
+    for (const spec of [':(glob)**/*.pth', ':(glob)**/sitecustomize.py', ':(exclude,glob)**/.venv/**', ':(exclude,glob)**/.*/**', ':(exclude,glob)**/__pycache__/**', ':(exclude,glob)**/*.egg-info/**', ':(exclude,glob)**/build/**'])
+      expect([spec, key.includes(spec)]).toEqual([spec, true])
   })
 })

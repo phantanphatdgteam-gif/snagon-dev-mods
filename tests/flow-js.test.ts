@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'claude-code/testing'
-import { lexParts, codeOf, placeOf, openerAt, deadCodeAfter, normCalls, TEST_START, depth } from '../hooks/flow-js'
+import { lexParts, codeOf, placeOf, openerAt, deadCodeAfter, normCalls, TEST_START, depth } from '../hooks/stacks/typescript-lex'
 
 const k = (texts: string[], start = 10) => texts.map((text, i) => ({ n: start + i, text }))
 

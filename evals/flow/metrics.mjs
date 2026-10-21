@@ -76,7 +76,7 @@ const nudges = (read('run.log').match(/ nudge \d+/g) ?? []).length
 
 console.log(JSON.stringify({
   verdict, usd, turns: cost.length, minutes, nudges,
-  spend: { flow: record?.spent ?? null, by: record?.spendBy ?? null, flowCap: record?.flowCap ?? null, sessionCap: record?.setup?.sessionCap ?? null },
+  spend: { flow: record?.spent ?? null, by: record?.spendBy ?? null },
   caps: record?.counters ?? null, blocked: timeline.filter(x => x.blocked).map(x => ({ at: x.task, reason: x.blocked })),
   mainLlmCalls: mainCalls, agents, cardChars: { n: cards.length, mean: cards.length ? Math.round(cards.reduce((a, b) => a + b, 0) / cards.length) : null, max: cards.length ? Math.max(...cards) : null },
   judge: { baselineMs: judgeMs, directTestMs: direct.directTestMs ?? null, overheadMs: judgeMs.test !== undefined && direct.directTestMs !== undefined ? judgeMs.test - direct.directTestMs : null },

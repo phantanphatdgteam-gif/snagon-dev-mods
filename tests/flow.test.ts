@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'claude-code/testing'
-import { afterPass, BLOCKED_EXITS, exitsFor, escalateBlock, escalateHash, stopBlock, card, CARD_MAX_LINES, flowCostLine, costCapHit } from '../hooks/flow'
+import { afterPass, BLOCKED_EXITS, exitsFor, escalateBlock, escalateHash, stopBlock, card, CARD_MAX_LINES, flowCostLine } from '../hooks/flow'
 import { BLOCKED_REASONS } from '../flow/data/phases'
 
 describe('flow machine: the task pointer', () => {
@@ -29,7 +29,11 @@ describe('flow machine: blocked reasons and their owner exits', () => {
   test('every blocked reason names the owner command that leaves it (plan §3.2)', () => {
     for (const reason of BLOCKED_REASONS) expect([reason, (BLOCKED_EXITS[reason] ?? []).length > 0]).toEqual([reason, true])
     expect(Object.keys(BLOCKED_EXITS).sort()).toEqual([...BLOCKED_REASONS].sort())
-    expect(exitsFor('cost', {})).toEqual(['/flow-retry cost', '/flow-off'])
+    expect(exitsFor('cost', {})).toEqual(['/flow-retry cost', '/flow-off']) // nothing raises `cost` since 2026-10-20; /flow-retry cost lets an old one go
+    // /flow-retry only adds rounds: it releases a `cap` and a plan-lint block, never a `dispute`, so the card does not offer it there
+    expect(exitsFor('dispute', {})).toEqual(['/flow-decide <X-n> fix|reject|followup', '/flow-reject plan'])
+    expect(exitsFor('cap', { scope: 'F-01', kind: 'review' })).toEqual(['/flow-decide <X-n> fix|reject|followup', '/flow-retry <scope>', '/flow-reject plan'])
+    expect(exitsFor('planLint', {})).toEqual(['/flow-reject plan', '/flow-retry plan'])
     expect(exitsFor('stalled', { id: 'T-4', n: '3' })).toEqual(['/flow-retry check', '/flow-off'])
     expect(exitsFor('noSurface', { command: '/flow-ship' })).toEqual(['/flow-ship'])
     expect([exitsFor('floor', { id: 'FL-2' }), exitsFor('redCheck', { cmdId: 'lint' })]).toEqual([['/flow-waive FL-2 <reason>'], ['/flow-waive check:lint <reason>']])
@@ -86,18 +90,23 @@ describe('flow machine: ESCALATE and the Stop block', () => {
     const active = await stopBlock({ message: 'done', judge: 'red', claimHeld: false, hits: ['FL-1'], pressure: 'x', journal: 'y', stopHookActive: true })
     expect([active.block, active.claimHeld, active.claimRepeat]).toEqual([undefined, false, true])
     expect((await stopBlock({ message: 'still working', judge: 'red', claimHeld: false, hits: [], stopHookActive: true })).claimRepeat).toBe(false)
+    // D13: inside stop_hook_active a counted push to an unstarted ticket blocks, with the pressure line alone
+    const pushed = await stopBlock({ message: 'done', judge: 'red', claimHeld: false, hits: ['FL-1'], pressure: 'B2 F-01', journal: 'y', stopHookActive: true, ticketPush: true })
+    expect([pushed.block, pushed.claimHeld, pushed.claimRepeat]).toEqual(['1. The current task is not passed and rounds are left: B2 F-01.', false, true])
+    expect((await stopBlock({ message: 'ok', judge: 'red', claimHeld: false, hits: [], stopHookActive: true, ticketPush: true })).block).toBeUndefined()
   })
 })
 
 describe('flow machine: the card and the cost line', () => {
   const input = {
     lang: 'vi' as const, address: 'Anh Phát', pointer: { phase: 'build' as const, task: 'B4', feature: 'F-02' }, used: { e: 1, r: 2, d: 0 }, caps: { e: 3, r: 3, d: 4 },
-    open: ['R-1', 'J-2'], sandbox: 'bật', cost: { session: 1.2, sessionCap: 10, flow: 3.4, flowCap: 30 }, next: { step: 'review vòng 3', command: 'TICKET T-7' },
+    open: ['R-1', 'J-2'], sandbox: 'bật', cost: { session: 1.2, flow: 3.4 }, next: { step: 'review vòng 3', command: 'TICKET T-7' },
   }
   test('the card: phase and task, caps used, open ids, the blocked cause, sandbox, cost and the next command, at most 12 lines', () => {
     expect(card(input)).toEqual([
-      'flow · build / B4 F-02', 'Đã dùng: sửa 1/3, review 2/3, debug 0/4', 'Còn mở: R-1, J-2', 'Sandbox: bật', 'Chi phí: phiên $1.20/$10.00; flow $3.40/$30.00', 'Bước tiếp: review vòng 3. Lệnh: TICKET T-7',
+      'flow · build / B4 F-02', 'Đã dùng: sửa 1/3, review 2/3, debug 0/4', 'Còn mở: R-1, J-2', 'Sandbox: bật', 'Chi phí: phiên $1.20; flow $3.40', 'Bước tiếp: review vòng 3. Lệnh: TICKET T-7',
     ])
+    // an older record that still holds the `cost` reason reads; /flow-retry cost lets it go (no cost cap since 2026-10-20)
     const blocked = card({ ...input, open: [], blocked: { reason: 'cost', vars: { kind: 'flow', cap: '30.00' } } })
     expect(blocked).toContain('Đang bị chặn, CHƯA xong: đã chạm trần chi phí flow $30.00')
     expect(blocked.at(-1)).toBe('Bước tiếp: Anh Phát chọn. Lệnh: /flow-retry cost · /flow-off')
@@ -120,8 +129,10 @@ describe('flow machine: the card and the cost line', () => {
     expect(many[2]).toBe(`Còn mở: ${Array.from({ length: 10 }, (_, i) => `R-${i + 1}`).join(', ')} +30`)
   })
 
-  test('the cost line and the caps', () => {
-    expect(flowCostLine({ session: 1.2, sessionCap: 10, flow: 3.456, flowCap: 30, phase: 'build', phaseUsd: 2.1, noticeAt: 5 })).toBe('flow: session $1.20 / cap $10.00; flow $3.46 / cap $30.00; phase build $2.10 (notice at $5.00)')
-    expect([costCapHit({ session: 9.99, sessionCap: 10, flow: 1, flowCap: 30 }), costCapHit({ session: 10, sessionCap: 10, flow: 1, flowCap: 30 }), costCapHit({ session: 1, sessionCap: 10, flow: 30, flowCap: 30 }), costCapHit({ session: NaN, sessionCap: 10, flow: 1, flowCap: 30 }), costCapHit({ session: 1, sessionCap: 10, flow: NaN, flowCap: 30 })]).toEqual([null, 'session', 'flow', 'session', 'flow'])
+  test('the cost line shows the spend only: no cap, no notice (owner decision 2026-10-20)', () => {
+    const line = flowCostLine({ session: 1.2, flow: 3.456, phase: 'build', phaseUsd: 2.1 })
+    expect(line).toBe('flow: session $1.20; flow $3.46; phase build $2.10')
+    expect(line).not.toMatch(/cap|notice/)
+    expect(card(input).find(l => l.startsWith('Chi phí'))).not.toMatch(/\/|trần|cap/)
   })
 })

@@ -85,11 +85,22 @@ assert.ok(method.includes('/skills/${s}/SKILL.md') && method.includes('/referenc
 const skillsSrc = routing.slice(routing.indexOf('  skills: {'), routing.indexOf('  references: {'))
 const routedSkills = [...new Set([...skillsSrc.matchAll(/'([\w-]+)'/g)].map(m => m[1]))]
 assert.ok(routedSkills.length >= 5 && routedSkills.every(s => approved.skills.includes(s)), 'every routed skill is vendored')
-const red = /RED_TESTING = \{ reference: '([\w-]+)', sections: \[([^\]]*)\] \}/.exec(routing)
-assert.ok(red, 'routing.ts names B1 testing text')
-const redSections = [...red[2].matchAll(/'([^']+)'/g)].map(m => m[1])
-assert.deepEqual(redSections, CITED[red[1]], 'B1 testing text is the testing-patterns sections §8.1 cites')
-const quoted = [...routedSkills.map(s => `${VENDOR}/skills/${s}/SKILL.md`), `${VENDOR}/references/${red[1]}.md`, OVERRIDES]
+// B1's testing text is the flow stack's (R2 plan §4.4): sections of a vendored reference (those §8.1 cites), or of one of
+// the mod's own skills; each cited heading is in the file the code reads
+const stackFiles = fs.readdirSync(at('flow/data/stacks')).filter(n => n.endsWith('.ts')).sort().map(n => `flow/data/stacks/${n}`)
+const redOf = f => {
+  const m = /redTesting: \{ from: '(reference|skill)', name: '([\w-]+)', sections: \[([^\]]*)\] \}/.exec(read(f))
+  assert.ok(m, `${f} names its B1 testing text`)
+  return { from: m[1], name: m[2], sections: [...m[3].matchAll(/'([^']+)'/g)].map(x => x[1]), file: m[1] === 'reference' ? `${VENDOR}/references/${m[2]}.md` : `skills/${m[2]}/SKILL.md` }
+}
+const reds = Object.fromEntries(stackFiles.map(f => [/id: '([\w-]+)'/.exec(read(f))?.[1], redOf(f)]))
+assert.ok(method.includes('`skills/${red.name}/SKILL.md`'), 'flow-method.ts reads a stack\'s own testing skill at skills/<name>/SKILL.md')
+for (const r of Object.values(reds)) {
+  if (r.from === 'reference') assert.deepEqual(r.sections, CITED[r.name], `B1 testing text of ${r.name} is the sections §8.1 cites`)
+  const hs = headings(read(r.file))
+  for (const s of r.sections) assert.ok(hs.some(h => cites(h, s)), `${r.file} has the heading B1 cites: ${s}`)
+}
+const quoted = [...routedSkills.map(s => `${VENDOR}/skills/${s}/SKILL.md`), ...new Set(Object.values(reds).map(r => r.file)), OVERRIDES]
 const PROTOCOL = [
   /UNTRUSTED-/i, /REVIEW-END/i, /NO-FINDINGS/i, /FINDING\s*\|/i, /\[flow-escalate\]/i, /TICKET\s+\S/, /<<<|>>>/, /\p{Cf}/u, /\r/,
   // a line or paragraph separator reads as a line break, and a run of them makes the line-start patterns below quadratic
@@ -122,11 +133,11 @@ const num = re => Number((re.exec(reviewSrc)?.[1] ?? 'NaN').replace(/_/g, ''))
 const CAP = { lines: num(/TICKET_CAP = \{ lines: ([\d_]+)/), chars: num(/TICKET_CAP = \{ lines: [\d_]+, chars: ([\d_]+)/) }
 const FAILING = { lines: num(/DEBUG_OUTPUT_LINES = ([\d_]+)/), chars: num(/DEBUG_OUTPUT_LINES = ([\d_]+)/) * num(/DEBUG_LINE_CHARS = ([\d_]+)/) }
 assert.ok([CAP.lines, CAP.chars, FAILING.lines, FAILING.chars].every(Number.isFinite), 'the ticket cap and the debug output size are read from flow-review.ts')
-const stackId = /id: '([\w-]+)'/.exec(read('flow/data/stacks.ts'))?.[1]
-assert.ok(stackId, 'stacks.ts names the flow stack')
-const ruleDir = `instructions/paths/${stackId}`
-const stackRules = fs.readdirSync(at(ruleDir)).filter(n => n.endsWith('.md')).sort()
-  .map(n => [`### Stack rules (${stackId}/${n})`, read(`${ruleDir}/${n}`).replace(/^---\n[\s\S]*?\n---\n?/, '').replace(/<!--[\s\S]*?-->\n?/g, '').trim()].join('\n')).join('\n')
+// every stack a flow can freeze: its rules go into its feature tickets
+const stackIds = fs.readdirSync(at('flow/data/stacks')).filter(n => n.endsWith('.ts')).sort().map(n => /id: '([\w-]+)'/.exec(read(`flow/data/stacks/${n}`))?.[1])
+assert.ok(stackIds.length > 0 && stackIds.every(Boolean), 'each file in flow/data/stacks names its stack')
+const rulesOf = stackId => fs.readdirSync(at(`instructions/paths/${stackId}`)).filter(n => n.endsWith('.md')).sort()
+  .map(n => [`### Stack rules (${stackId}/${n})`, read(`instructions/paths/${stackId}/${n}`).replace(/^---\n[\s\S]*?\n---\n?/, '').replace(/<!--[\s\S]*?-->\n?/g, '').trim()].join('\n')).join('\n')
 const roleSkills = Object.fromEntries([...skillsSrc.matchAll(/^\s+(\w+): \[([^\]]*)\]/gm)].map(m => [m[1], [...(m[2] ?? '').matchAll(/'([\w-]+)'/g)].map(x => x[1])]))
 const sectionOf = files => ['## Reference method (agent-skills, MIT, xxxxxxxx)', ...files.map(f => read(f).trim()), overrides.trim()].join('\n\n')
 const size = t => ({ lines: t.split('\n').length, chars: t.length })
@@ -134,16 +145,19 @@ const size = t => ({ lines: t.split('\n').length, chars: t.length })
 // severity scale, rubric and answer rules; the plan ticket's format, rules and the owner's words
 const FEATURE_FRAME = { lines: 40, chars: 3_000 }, REVIEW_FRAME = { lines: 60, chars: 8_000 }, PLAN_FRAME = { lines: 40, chars: 4_000 }
 const MIN_ROOM = { lines: 300, chars: 10_000 } // what must stay for the feature's files, or for a review's diff
-const BUDGET = {
-  planner: [PLAN_FRAME], red: [FEATURE_FRAME, stackRules], author: [FEATURE_FRAME, stackRules], debugger: [FEATURE_FRAME, stackRules, FAILING],
-  reviewer: [REVIEW_FRAME], securityReviewer: [REVIEW_FRAME],
-}
-for (const [role, extras] of Object.entries(BUDGET)) {
-  // B1's method is a few sections of its reference; the whole file is counted here, which only overstates it
-  const files = role === 'red' ? [`${VENDOR}/references/${red[1]}.md`] : (roleSkills[role] ?? []).map(s => `${VENDOR}/skills/${s}/SKILL.md`)
-  assert.ok(files.length > 0, `${role} has a method to count`)
-  const used = [size(sectionOf(files)), ...extras.map(x => (typeof x === 'string' ? size(x) : x))].reduce((a, b) => ({ lines: a.lines + b.lines, chars: a.chars + b.chars }))
-  assert.ok(CAP.lines - used.lines >= MIN_ROOM.lines && CAP.chars - used.chars >= MIN_ROOM.chars, `${role}: the fixed parts of its ticket (${used.lines} lines, ${used.chars} chars) leave room under the cap for its files or diff`)
+for (const stackId of stackIds) {
+  const stackRules = rulesOf(stackId)
+  const BUDGET = {
+    planner: [PLAN_FRAME], red: [FEATURE_FRAME, stackRules], author: [FEATURE_FRAME, stackRules], debugger: [FEATURE_FRAME, stackRules, FAILING],
+    buildFixer: [FEATURE_FRAME, stackRules, FAILING], reviewer: [REVIEW_FRAME], securityReviewer: [REVIEW_FRAME],
+  }
+  for (const [role, extras] of Object.entries(BUDGET)) {
+    // B1's method is a few sections of the stack's testing text; the whole file is counted here, which only overstates it
+    const files = role === 'red' ? [reds[stackId]?.file ?? ''] : (roleSkills[role] ?? []).map(s => `${VENDOR}/skills/${s}/SKILL.md`)
+    assert.ok(files.length > 0, `${role} has a method to count`)
+    const used = [size(sectionOf(files)), ...extras.map(x => (typeof x === 'string' ? size(x) : x))].reduce((a, b) => ({ lines: a.lines + b.lines, chars: a.chars + b.chars }))
+    assert.ok(CAP.lines - used.lines >= MIN_ROOM.lines && CAP.chars - used.chars >= MIN_ROOM.chars, `${stackId} ${role}: the fixed parts of its ticket (${used.lines} lines, ${used.chars} chars) leave room under the cap for its files or diff`)
+  }
 }
 
 // Credits: the MIT licence beside the other licences, and a CREDITS.md section naming the locked commit.

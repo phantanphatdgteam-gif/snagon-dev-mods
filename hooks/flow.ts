@@ -38,19 +38,24 @@ export function afterPass(p: Pointer, ctx: { features: readonly string[]; baseli
 }
 
 const DECIDE = ['/flow-decide <X-n> fix|reject|followup', '/flow-retry <scope>', '/flow-reject plan']
+/** /flow-retry adds rounds and lets go only a `cap` or a plan-lint block (flow-decide.ts): a `dispute` waits for a decision. */
+const DISPUTE = ['/flow-decide <X-n> fix|reject|followup', '/flow-reject plan']
 /** §3.2: the owner commands that leave each blocked reason; `{name}` comes from the reason's values (`{command}`: the
  * command to repeat or the one awaited; `{id}`, `{cmdId}`: the finding or command to waive). */
 export const BLOCKED_EXITS: Readonly<Record<string, readonly string[]>> = {
-  cap: DECIDE, dispute: DECIDE, frozenChanged: ['/flow-reject plan'], cmdSrc: ['/flow-setup'], remoteChanged: ['/flow-setup'], tooSlow: ['/flow-setup'],
+  cap: DECIDE, dispute: DISPUTE, frozenChanged: ['/flow-reject plan'], cmdSrc: ['/flow-setup'], remoteChanged: ['/flow-setup'], tooSlow: ['/flow-setup'],
   sandboxMismatch: ['/flow-setup'], probeInconclusive: ['/flow-setup'], sandboxKey: ['/flow-setup'], tampered: ['/flow-setup', '/flow-off'], couldNotRun: ['/flow-retry check'],
   cost: ['/flow-retry cost', '/flow-off'], redCheck: ['/flow-waive check:{cmdId} <reason>'], floor: ['/flow-waive {id} <reason>'], junk: ['/flow-waive {id} <reason>'],
   injection: ['/flow-waive {id} <reason>'], redTestChanged: ['/flow-waive {id} <reason>'], pushRejected: ['/flow-verify', '/flow-off'], reportChanged: ['/flow-verify', '/flow-off'], viewOnly: ['/flow-status'],
-  awaitingOwner: ['{command}'], split: ['/flow-reject plan'], noSurface: ['{command}'], planLint: ['/flow-reject plan'], publish: ['/flow-verify', '/flow-ship', '/flow-off'],
+  awaitingOwner: ['{command}'], split: ['/flow-reject plan'], noSurface: ['{command}'], planLint: ['/flow-reject plan', '/flow-retry plan'], publish: ['/flow-verify', '/flow-ship', '/flow-off'],
   stalled: ['/flow-retry check', '/flow-off'],
 }
+/** A feature's debug cap also offers `/flow-allow red` (a plan or verify cap, or another kind of round, does not). */
+const ALLOW_RED = '/flow-allow red {scope} <reason>'
 export function exitsFor(reason: string, vars: Readonly<Record<string, string>>): string[] {
-  const exits = BLOCKED_EXITS[reason]
-  if (!exits) throw new Error(`flow: no owner exit for blocked reason ${reason}`)
+  const base = BLOCKED_EXITS[reason]
+  if (!base) throw new Error(`flow: no owner exit for blocked reason ${reason}`)
+  const exits = reason === 'cap' && vars.kind === 'debug' && /^F-\d{2}$/.test(vars.scope ?? '') ? [...base, ALLOW_RED] : base
   return exits.map(x => x.replace(/\{(\w+)\}/g, (_, name: string) => { const v = vars[name]; if (!v) throw new Error(`flow: ${reason} needs {${name}}`); return v }))
 }
 
@@ -79,36 +84,46 @@ async function stripEscalate(message: string, stored: string | undefined): Promi
   for (const m of message.matchAll(/\[flow-escalate\][\s\S]*?\[\/flow-escalate\]/g)) if (stored && (await sha256(m[0])) === stored) out = out.replace(m[0], '\n')
   return out
 }
-/** judge: 'none' when no judge applies to the current task (setup and plan phases). */
-export type StopIn = { message: string; escalateHash?: string; judge: 'green' | 'none' | 'red' | 'missing' | 'stale'; claimHeld: boolean; hits: readonly string[]; pressure?: string; journal?: string; stopHookActive: boolean }
+/** judge: 'none' when no judge applies to the current task (setup and plan phases). ticketPush: this Stop is one of
+ * D13's counted pushes back to an unstarted ticket (flowStop), the one reason that still blocks inside stop_hook_active. */
+export type StopIn = { message: string; escalateHash?: string; judge: 'green' | 'none' | 'red' | 'missing' | 'stale'; claimHeld: boolean; hits: readonly string[]; pressure?: string; journal?: string; stopHookActive: boolean; ticketPush?: boolean }
 /** claimRepeat: a done claim that was not held this time (a repeat, or inside stop_hook_active): flag it on the card. */
 export type StopOut = { block?: string; claimHeld: boolean; claimRepeat: boolean }
+const pressed = (pressure: string): string => `The current task is not passed and rounds are left: ${pressure}.`
 /** §5.2 / §6: one Stop block, numbered in order — 1 a done claim while the judge is not green (held once; a repeat only
  * flags the card and the journal), 2 unresolved floor or junk hits, 3 flow pressure, 4 the journal reminder (alone, as
- * today). No block when stop_hook_active, but a repeated claim is still flagged. `claimHeld` resets once the judge is green. */
+ * today). Inside stop_hook_active only D13's push blocks, with the pressure line alone; a repeated claim is still
+ * flagged. `claimHeld` resets once the judge is green. */
 export async function stopBlock(i: StopIn): Promise<StopOut> {
   const claimed = i.judge !== 'green' && i.judge !== 'none' && claims(await stripEscalate(i.message, i.escalateHash))
   // A claim not held now (a repeat, or one inside stop_hook_active, which cannot block) is flagged on the card and journal.
   const held = { claimHeld: i.judge === 'green' ? false : i.claimHeld || (claimed && !i.stopHookActive), claimRepeat: claimed && (i.claimHeld || i.stopHookActive) }
-  if (i.stopHookActive) return held
+  // D13's pushes come back to back inside stop_hook_active: a main that will not start its ticket gets no other wake-up,
+  // so a push only outside it left the flow hanging at one push with nothing blocked (live runs 2026-10-20). flowStop
+  // bounds them by STALL_LIMIT and then blocks the flow `stalled`; the claim and the journal reminder stay once a wake-up.
+  if (i.stopHookActive) return i.ticketPush && i.pressure ? { block: `1. ${pressed(i.pressure)}`, ...held } : held
   const reasons = [
     ...(claimed && !i.claimHeld ? [`The last reply claims the work is done, but the judge is ${i.judge}. Run flow_check and report its result; do not claim done until it passes.`] : []),
     ...(i.hits.length ? [`Unresolved floor or junk findings: ${i.hits.join(', ')}. Fix them, or ask the project owner to waive them.`] : []),
-    ...(i.pressure ? [`The current task is not passed and rounds are left: ${i.pressure}.`] : []),
+    ...(i.pressure ? [pressed(i.pressure)] : []),
     ...(i.journal ? [i.journal] : []),
   ]
   const block = reasons.length === 1 && i.journal ? i.journal : reasons.length ? reasons.map((r, k) => `${k + 1}. ${r}`).join('\n') : undefined
   return { ...(block ? { block } : {}), ...held }
 }
 
-export type Cost = { session: number; sessionCap: number; flow: number; flowCap: number }
+export type Cost = { session: number; flow: number }
 export const CARD_MAX_LINES = 12
 const OPEN_SHOWN = 10
 export type CardIn = {
   lang: Language; address: string; pointer: Pointer; used: Caps; caps: Caps; open: readonly string[]; blocked?: { reason: string; vars: Readonly<Record<string, string>> }
   claim?: 'red' | 'missing' | 'stale'; sandbox: string; runnerAbsent?: boolean; cost: Cost; next: { step: string; command: string }
+  /** Features whose accepted dependency change re-baselined the runner hash (AC-RI-3). */
+  rebased?: readonly string[]
+  /** Scopes re-checked after kept trees were lost, with the trees' names (AC-A1-2). */
+  reverified?: Readonly<Record<string, string>>
 }
-const usd = (n: number): string => n.toFixed(2)
+const usd = (n: number): string => (Number.isFinite(n) ? n.toFixed(2) : '?') // a spend that cannot be read is not $0.00
 /** The most characters of one blocked value on the card (git or remote stderr can be long). */
 const CAUSE_CHARS = 160
 /** A blocked cause's values as the card shows them (the card goes into the model's context): a line that looks like a
@@ -131,14 +146,14 @@ export function card(c: CardIn): string[] {
     ...(c.claim ? [fill(lang, 'card.claim', { state: fill(lang, `judge.${c.claim}`, {}) })] : []),
     fill(lang, 'card.sandbox', { state: c.sandbox }),
     ...(c.runnerAbsent ? [fill(lang, 'card.runner', {})] : []), // F30: never counted as integrity
-    fill(lang, 'card.cost', { session: usd(c.cost.session), sessionCap: usd(c.cost.sessionCap), flow: usd(c.cost.flow), flowCap: usd(c.cost.flowCap) }),
+    ...(c.rebased?.length ? [fill(lang, 'card.rebase', { f: c.rebased.join(', ') })] : []),
+    ...Object.entries(c.reverified ?? {}).map(([scope, lost]) => fill(lang, 'card.reverify', { scope, lost })),
+    fill(lang, 'card.cost', { session: usd(c.cost.session), flow: usd(c.cost.flow) }),
     c.blocked ? fill(lang, 'card.next', { step: fill(lang, 'card.ownerChooses', { address }), command: exitsFor(c.blocked.reason, c.blocked.vars).join(' · ') }) : fill(lang, 'card.next', c.next),
   ]
   return lines.slice(0, CARD_MAX_LINES)
 }
 
-/** §6 usage line for the model: spend against the frozen caps. */
-export const flowCostLine = (c: Cost & { phase: Phase; phaseUsd: number; noticeAt: number }): string =>
-  `flow: session $${usd(c.session)} / cap $${usd(c.sessionCap)}; flow $${usd(c.flow)} / cap $${usd(c.flowCap)}; phase ${c.phase} $${usd(c.phaseUsd)} (notice at $${usd(c.noticeAt)})`
-/** Which cap the spend reached (no more tickets, `blocked: cost`), or null. A spend that cannot be read counts as reached. */
-export const costCapHit = (c: Cost): 'session' | 'flow' | null => (!(c.session < c.sessionCap) ? 'session' : !(c.flow < c.flowCap) ? 'flow' : null)
+/** §6 usage line for the model: the spend only (no cost cap since 2026-10-20). */
+export const flowCostLine = (c: Cost & { phase: Phase; phaseUsd: number }): string =>
+  `flow: session $${usd(c.session)}; flow $${usd(c.flow)}; phase ${c.phase} $${usd(c.phaseUsd)}`

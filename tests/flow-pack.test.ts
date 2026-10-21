@@ -106,7 +106,7 @@ describe('flow packs (plan v7.1 §7)', () => {
 
   test('roomLeft: the room a ticket frame leaves, so the ticket with its pack stays within the ticket cap', () => {
     // the frame holds the role's vendored method (plan §8), so the pack's room is what the method leaves
-    const t = { f: 'F-02', failing: 'FAIL x', nonce: 'abcd1234abcd1234', pluginProject: true, method: Array<string>(300).fill('method line').join('\n') }
+    const t = { f: 'F-02', command: 'test', failing: 'FAIL x', nonce: 'abcd1234abcd1234', pluginProject: true, method: Array<string>(300).fill('method line').join('\n') }
     const room = roomLeft(debugTicketText({ ...t, pack: '' }) ?? '')
     const lines = Array<string>(room.lines).fill('p').join('\n')
     expect([debugTicketText({ ...t, pack: lines }) !== null, debugTicketText({ ...t, pack: `${lines}\np` })]).toEqual([true, null])

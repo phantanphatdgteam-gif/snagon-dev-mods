@@ -15,7 +15,7 @@ the sandbox refuses. The dry run of 2026-10-17 found eleven such things (dry-run
 | `scenarios.sh` | One `scenario_<id>` function per scenario; writes `verdict` |
 | `metrics.mjs` | Reads a run folder and prints the summary JSON (spend per phase and feature, LLM calls per agent and per main step, caps, card size, judge time, record versions, denials) |
 | `dry-run.md`, `safety.md`, `happy-path.md` | What each scenario does, what counts as a pass, what was found |
-| `results/` | Reports copied here after a campaign (never during a run) |
+| `results/` | Reports copied here after a campaign (never during a run); kept in the private development copy and not published, because the evidence holds this machine's paths and the trial project's own files |
 
 ## Run
 
@@ -52,9 +52,10 @@ hash8 (and the release code) from the pane on screen, as the owner would; after 
 record to move or for main to go idle, and never types twice into that wait (a command typed while main works is
 queued by Claude Code and runs when the turn ends). Claude Code's own dialogs are answered as the owner would:
 the write into `.claude/` (the approved S2b settings) is confirmed, anything else (a host outside the allowed
-domains) is declined with Escape; both are counted. A `cost` block is retried once (`/flow-retry cost`); a
-`floor` block on fix-scope findings is waived finding by finding with a reason and the waiver approved, at most
-six times a run; any other block ends the run with the reason in `verdict`. While a ticket's agent runs in the
+domains) is declined with Escape; both are counted. There is no cost cap (owner's decision, 2026-10-20). A
+`floor` block on the scope rules' findings (fix-scope, out-of-scope) is waived finding by finding with a reason and
+the waiver approved, at most six times a run; any other block, and any other finding (a changed RED test, an
+injection, a trivial assertion), ends the run with the reason in `verdict`. While a ticket's agent runs in the
 background the robot waits; when main is idle for 3 minutes with nothing running and nothing waiting for the
 owner, it is nudged ("Call flow_status and do what it says.") and the nudge is counted. At the end the run's flow
 record is ended as `/flow-off` would.

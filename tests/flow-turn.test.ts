@@ -28,7 +28,8 @@ describe('flow-turn: the card', () => {
     expect(text).toContain('Used: edit 1/3, review 0/0, debug 0/0')
     expect(text).toContain('Next: waiting for the project owner. Command: /flow-plan')
     expect(text).toContain('Sandbox: not checked in this session yet')
-    expect(text).toContain('Cost: session $1.00 of $15.00')
+    expect(text).toContain('Cost: session $1.00; flow $0.00')
+    expect(text).not.toMatch(/ of \$|cap|notice/i) // the spend only, no cap (owner decision 2026-10-20)
     expect(lines.length).toBeLessThanOrEqual(CARD_MAX_LINES)
   })
 
@@ -91,9 +92,6 @@ describe('flow-turn: D13, a main that will not start its ticket', () => {
       expect((await flowStop(w.host, { message: 'I will not start it.', stopHookActive: false }))?.block).toMatch(/The current task is not passed and rounds are left: B2 F-01/)
       expect(w.session().value?.nudges['T-1']).toBe(k)
     }
-    // a turn inside stop_hook_active cannot push and does not count
-    expect((await flowStop(w.host, { message: 'still not', stopHookActive: true }))?.block).toBeUndefined()
-    expect(w.session().value?.nudges['T-1']).toBe(STALL_LIMIT)
     // the fourth Stop blocks the flow instead of pushing; what else the Stop carries (a done claim on a red judge, the
     // journal reminder) still comes, as on any Stop
     const fourth = await flowStop(w.host, { message: 'done', stopHookActive: false, journal: 'Write the journal entry.' })
@@ -111,6 +109,25 @@ describe('flow-turn: D13, a main that will not start its ticket', () => {
     // the owner's own prompt starts the count again (a main that stopped to ask the owner was not refusing)
     await ownerSpoke(w.host)
     expect(w.session().value?.nudges).toEqual({})
+  })
+
+  test('in one wake-up the pushes come back to back inside stop_hook_active, the pressure line alone, then the flow blocks stalled and main may stop', async () => {
+    // live: the first Stop of a wake-up is outside stop_hook_active and every Stop after a push is inside it; a main that
+    // will not start its ticket gets no other wake-up, so the count has to run here (runs of 2026-10-20 hung at one push)
+    const w = world({ record: { judge: RED, tickets: [ticket] } })
+    await mutateSession(w.host, s => ({ ...s, tickets: { ...s.tickets, 'T-1': 'TICKET T-1' } }))
+    expect((await flowStop(w.host, { message: 'I will not start it.', stopHookActive: false, journal: 'Write the journal entry.' }))?.block).toContain('Write the journal entry.')
+    for (let k = 2; k <= STALL_LIMIT; k++) {
+      // neither a done claim nor the journal reminder comes again inside stop_hook_active: the push alone
+      expect((await flowStop(w.host, { message: 'done', stopHookActive: true, journal: 'Write the journal entry.' }))?.block).toMatch(/^1\. The current task is not passed and rounds are left: B2 F-01 .*; call flow_status for the next step\.$/)
+      expect(w.session().value?.nudges['T-1']).toBe(k)
+    }
+    expect((await flowStop(w.host, { message: 'still not', stopHookActive: true }))?.block).toBeUndefined()
+    const view = await activeView(w.host)
+    expect(view.mode === 'on' ? view.record.blocked : undefined).toEqual({ reason: 'stalled', vars: { id: 'T-1', n: '3' } })
+    // a blocked flow pushes no more, so the pushes cannot loop
+    expect((await flowStop(w.host, { message: 'no', stopHookActive: true }))?.block).toBeUndefined()
+    expect((await flowStop(w.host, { message: 'no', stopHookActive: false }))?.block).toBeUndefined()
   })
 
   test('a ticket prompt is wanted only while an issued ticket is unstarted', async () => {
@@ -150,7 +167,7 @@ describe('flow-turn: one Stop block in order', () => {
     expect(w.journal.some(l => l.includes('said done again while the judge was red'))).toBe(true)
   })
 
-  test('stop_hook_active never blocks; setup and plan have no judge to claim against', async () => {
+  test('stop_hook_active blocks nothing but a D13 push (here no ticket waits); setup and plan have no judge to claim against', async () => {
     const w = world({ record: { judge: RED } })
     expect((await flowStop(w.host, { message: 'done', stopHookActive: true, journal: 'j' }))?.block).toBeUndefined()
     const plan = world({ record: { phase: 'plan', task: 'P2', feature: undefined, awaiting: '/flow-plan' } })

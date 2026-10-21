@@ -42,6 +42,6 @@ change is blocked as `tampered` at its next `flow_check` (the plugin integrity h
    cites, B1's testing sections, no protocol token in the text tickets quote), then `claude plugin test .`,
    `claude plugin validate .`, `sh tests/tsc.sh <claude-code.d.ts>` (the API file plugin-authoring names as it loads;
    `tsc -p .` reads a copy of the types the engine refreshes only when it loads the mod) and the other
-   `tests/*.check.mjs`. When upstream renamed a heading that plan §8.1 or
-   `RED_TESTING` cites, the check fails: the new name goes into the plan, `flow/data/routing.ts` and the check only with
-   the owner's word.
+   `tests/*.check.mjs`. When upstream renamed a heading that plan §8.1 or the TypeScript stack's
+   `redTesting` cites, the check fails: the new name goes into the plan, `flow/data/stacks/typescript.ts` and the check
+   only with the owner's word.

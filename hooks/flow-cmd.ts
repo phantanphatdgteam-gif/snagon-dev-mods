@@ -10,20 +10,22 @@ import { applySetup, pastedCheck, setupCommand, setupHash } from './flow-freeze'
 import { applyBaseline, baselineHash, showBaseline } from './flow-baseline'
 import { applyPlan, planCommand, planHash, rejectPlan } from './flow-planning'
 import { buildCommand } from './flow-build'
-import { applyWaive, decideCommand, retryCommand, waiveCommand, waiveHash } from './flow-decide'
+import { allowCommand, allowHash, applyAllow, applyWaive, decideCommand, retryCommand, waiveCommand, waiveHash } from './flow-decide'
 import { verifyCommand } from './flow-verify'
 import { applyRelease, releaseHash, shipCommand } from './flow-ship'
 import { cfgDetail, cfgDrift } from './flow-git'
+import { endTrees } from './flow-refs'
 
 export const FLOW_COMMANDS: readonly { name: OwnerName; description: string; argumentHint?: string }[] = [
-  { name: 'flow-setup', description: 'flow: start or re-freeze (commands, sandbox, tools); the owner approves what the pane shows', argumentHint: '[test|lint|typecheck|build="<argv>"] [tools=+<Tool>] [mcp=+mcp__<server>__<tool>]' },
+  { name: 'flow-setup', description: 'flow: start or re-freeze (commands, sandbox, tools); the owner approves what the pane shows', argumentHint: '[stack=<id>] [test|lint|typecheck|build="<argv>"] [tools=+<Tool>] [mcp=+mcp__<server>__<tool>]' },
   { name: 'flow-plan', description: 'flow: plan the work, or show the linted plan for approval' },
   { name: 'flow-build', description: 'flow: build the approved plan, feature by feature' },
   { name: 'flow-verify', description: 'flow: verify everything before shipping' },
   { name: 'flow-ship', description: 'flow: show the release and its code for approval' },
-  { name: 'flow-approve', description: 'flow: approve what the flow pane shows', argumentHint: 'setup|baseline|plan|waive <hash8> · release <hash8> <code>' },
+  { name: 'flow-approve', description: 'flow: approve what the flow pane shows', argumentHint: 'setup|baseline|plan|waive|allow <hash8> · release <hash8> <code>' },
   { name: 'flow-decide', description: 'flow: decide a finding that blocks', argumentHint: '<X-n> fix|reject|followup' },
-  { name: 'flow-retry', description: 'flow: one more round for a scope at its cap', argumentHint: 'plan|F-NN|verify|check|cost' },
+  { name: 'flow-retry', description: 'flow: one more round for a scope at its cap', argumentHint: 'plan|F-NN|verify|check' },
+  { name: 'flow-allow', description: 'flow: let one debug ticket fix a RED test; the owner approves what the pane shows', argumentHint: 'red F-NN <reason>' },
   { name: 'flow-waive', description: 'flow: waive a red check or a floor or junk finding', argumentHint: 'check:<cmdId>|FL-n|J-n <reason>' },
   { name: 'flow-reject', description: 'flow: reject the plan and plan again', argumentHint: 'plan' },
   { name: 'flow-off', description: 'flow: end the flow', argumentHint: '[<id8>]' },
@@ -59,7 +61,7 @@ async function answer(h: FlowHost, cmd: OwnerCmd | { error: string }, e: Command
   if (cmd.name === 'flow-off') return flowOff(h, cmd.id)
   await takeLock(h)
   switch (cmd.name) {
-    case 'flow-setup': return setupCommand(h, { overrides: cmd.overrides, tools: cmd.tools, mcp: cmd.mcp }, e.origin)
+    case 'flow-setup': return setupCommand(h, { overrides: cmd.overrides, tools: cmd.tools, mcp: cmd.mcp, ...(cmd.stack === undefined ? {} : { stack: cmd.stack }) }, e.origin)
     case 'flow-plan': return planCommand(h, cmd.intent, e.origin)
     case 'flow-reject': return rejectPlan(h)
     case 'flow-build': return buildCommand(h)
@@ -68,6 +70,7 @@ async function answer(h: FlowHost, cmd: OwnerCmd | { error: string }, e: Command
     case 'flow-decide': return decideCommand(h, cmd.id, cmd.choice)
     case 'flow-retry': return retryCommand(h, cmd.scope)
     case 'flow-waive': return waiveCommand(h, cmd.target, cmd.reason, e.origin)
+    case 'flow-allow': return allowCommand(h, cmd.feature, cmd.reason, e.origin)
     case 'flow-status': {
       const view = await activeView(h)
       const shown = view.mode === 'on' ? (await pastedCheck(h, view.record)) ?? (await showBaseline(h, view.record, e.origin)) : null
@@ -87,13 +90,14 @@ async function takeLock(h: FlowHost): Promise<void> {
 
 /** The echo of `kind` rebuilt from the current draft and files, as its hash; undefined while no builder exists for it. */
 async function recomputeEcho(h: FlowHost, kind: EchoKind): Promise<string | undefined> {
-  return kind === 'setup' ? setupHash(h) : kind === 'baseline' ? baselineHash(h) : kind === 'plan' ? planHash(h) : kind === 'waive' ? waiveHash(h) : kind === 'release' ? releaseHash(h) : undefined
+  return kind === 'setup' ? setupHash(h) : kind === 'baseline' ? baselineHash(h) : kind === 'plan' ? planHash(h) : kind === 'waive' ? waiveHash(h) : kind === 'allow' ? allowHash(h) : kind === 'release' ? releaseHash(h) : undefined
 }
 async function applyApproval(h: FlowHost, a: Approval): Promise<string> {
   if (a.kind === 'setup') return applySetup(h, a)
   if (a.kind === 'baseline') return applyBaseline(h, a)
   if (a.kind === 'plan') return applyPlan(h, a)
   if (a.kind === 'waive') return applyWaive(h, a)
+  if (a.kind === 'allow') return applyAllow(h, a)
   if (a.kind === 'release') return applyRelease(h, a)
   throw new Error(`flow: the ${a.kind} approval is not wired yet`)
 }
@@ -130,7 +134,10 @@ async function flowOff(h: FlowHost, id: string | undefined): Promise<string> {
   if (!out.ok) return fill(lang, 'off.failed', { id: target, detail: out.reason })
   takeCode(undefined)
   await mutateSession(h, () => emptySession())
-  return [fill(lang, 'off.done', { id: target }), await offCfg(h, r), fill(lang, 'end.careful', {})].filter(Boolean).join('\n')
+  // A1: the kept trees go once `.end` is written; a record that cannot be read does not say its repository, so the owner
+  // is told where to look
+  const left = (await endTrees(h, r?.root ?? h.root, target)) ?? (r ? null : fill(lang, 'end.refsElsewhere', { id: target }))
+  return [fill(lang, 'off.done', { id: target }), left, await offCfg(h, r), fill(lang, 'end.careful', {})].filter(Boolean).join('\n')
 }
 
 /** NK-01, GAP-054-7: a hook or config planted during the flow outlives it, and git runs hooks for the owner's next command

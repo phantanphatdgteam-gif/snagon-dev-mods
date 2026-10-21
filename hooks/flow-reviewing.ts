@@ -6,10 +6,11 @@
 // and then shown to the reviewers in a delta round.
 import { ROUTING, routedAgent } from '../flow/data/routing'
 import { CODE, SECURITY, SEVERITY_ORDER } from '../flow/data/rubrics'
-import type { Rubric, Severity } from '../flow/data/types'
+import type { Rubric, Severity, Stack } from '../flow/data/types'
 import { afterPass, pointerFields } from './flow'
 import { git, gitPaths, type GitPaths } from './flow-git'
-import { parseDiff, SCAN_DIFF_ARGS } from './flow-scan'
+import { keepTrees, neededTrees, present } from './flow-refs'
+import { parseDiff, SCAN_DIFF_ARGS, type DiffFile } from './flow-scan'
 import { applyDelta, applyFix, assumptionsOf, changedHunks, deltaTicketText, fixTicketText, followUps, gate, parseFindings, parseReplies, reviewTicketText, upheld, type Finding } from './flow-review'
 import { activeView, blockFlow, dropView, mutateSession, session, type FlowHost } from './flow-host'
 import { CLOSED, updateRecord, usedIds, type Blocked, type FindingDigest, type FlowRecord, type ReviewRound, type TicketRecord, type UpdateResult } from './flow-state'
@@ -17,27 +18,34 @@ import { issueTicket } from './flow-ticket'
 import { methodText } from './flow-method'
 import { capRound, featureNow, startFeature, type FeatureNow } from './flow-build'
 import { writeView } from './flow-setup'
+import { stackOf } from './stacks/index'
 
 export const START_PROMPT = 'flow: a ticket is ready. Call flow_status and start the agent exactly as it says.'
-const TS = /\.(?:[cm]?ts|tsx)$/
 const SCANNED = /^(?:FL|J)-\d+$/
+/** The RED diff's place in a review ticket when the RED tree was lost (AC-A1-2). */
+const RED_LOST = 'The RED tree was deleted after RED. The RED tests are held by their frozen hash, and the judge checks they did not change.'
 const settled = (out: UpdateResult): FlowRecord => { dropView(); if (!out.ok) throw new Error(`flow: the record could not be written (${out.reason})`); return out.record }
 const isBlocked = (x: unknown): x is Blocked => typeof x === 'object' && x !== null && 'reason' in x && 'vars' in x
 const order = (id: string): number => Number(/^T-(\d+)$/.exec(id)?.[1] ?? 0)
 const SECURITY_TYPE = ROUTING.agents.securityReviewer.agent
 
-/** The reviewers a round needs: the code reviewer routed by the TypeScript share of changed lines, the security reviewer
- * when the plan says Security: yes or the diff forced it. */
+/** The code reviewer of a change (R2 plan §4.4, AC-STK-14): the stack's own from STACK_SHARE of the changed lines in the
+ * stack's own files (its `ownsFile`), else the core's; context lines do not count. */
+export function codeReviewerFor(stack: Pick<Stack, 'ownsFile' | 'routing'>, files: readonly DiffFile[]): string {
+  const owns = new RegExp(stack.ownsFile)
+  const lines = files.flatMap(f => f.lines.filter(l => l.kind !== ' ').map(() => owns.test(f.path)))
+  return routedAgent('reviewer', lines.length ? lines.filter(Boolean).length / lines.length : 0, stack.routing)
+}
+/** The reviewers a round needs: the routed code reviewer, the security reviewer when the plan says Security: yes or the
+ * diff forced it. */
 function reviewers(r: FlowRecord, fn: FeatureNow): string[] {
-  const lines = fn.files.flatMap(f => f.lines.filter(l => l.kind !== ' ').map(() => TS.test(f.path)))
-  const share = lines.length ? lines.filter(Boolean).length / lines.length : 0
-  return [routedAgent('reviewer', share), ...(fn.f.security === true || r.frozen[`security:${fn.f.id}`] === 'forced' ? [SECURITY_TYPE] : [])]
+  return [codeReviewerFor(stackOf(r).data, fn.files), ...(fn.f.security === true || r.frozen[`security:${fn.f.id}`] === 'forced' ? [SECURITY_TYPE] : [])]
 }
 const rubricsOf = (type: string): Rubric[] => (type === SECURITY_TYPE ? [SECURITY] : [CODE])
 const prefixOf = (type: string): string => (type === SECURITY_TYPE ? 'SR' : 'CR')
 const roleOf = (type: string): 'reviewer' | 'securityReviewer' => (type === SECURITY_TYPE ? 'securityReviewer' : 'reviewer')
-/** The share that routes the reviewer role to `type` (issueTicket routes by share). */
-const shareFor = (type: string): number => (type === routedAgent('reviewer', 1) ? 1 : 0)
+/** The share that routes the reviewer role to `type` (issueTicket routes by share, with the record stack's agents). */
+const shareFor = (r: FlowRecord, type: string): number => (type === routedAgent('reviewer', 1, stackOf(r).data.routing) ? 1 : 0)
 
 export async function diffBetween(h: FlowHost, p: GitPaths, from: string, to: string): Promise<string> {
   if (from === to) return ''
@@ -57,7 +65,9 @@ const digest = (x: Finding): FindingDigest => ({ id: x.id, f: x.f, rubricId: x.r
 async function roundTickets(h: FlowHost, r: FlowRecord, fn: FeatureNow, kind: 'review' | 'delta', prev: string | undefined, types: readonly string[], also?: (x: FlowRecord) => FlowRecord): Promise<string[] | Blocked> {
   const s = (await session(h)).value, pluginProject = r.setup?.pluginProject ?? false
   const acs = fn.plan.acs.filter(a => fn.f.acs.includes(a.id)).map(a => `${a.id}: ${a.text}`)
-  const redDiff = kind === 'review' ? await diffBetween(h, fn.p, fn.start, r.frozen[`red:${fn.f.id}`] ?? fn.start) : ''
+  // AC-A1-2: a RED tree deleted by hand is said so, never shown as RED having written nothing
+  const red = r.frozen[`red:${fn.f.id}`], redLost = red === undefined && r.redTestHash[fn.f.id] !== undefined
+  const redDiff = kind !== 'review' ? '' : redLost ? RED_LOST : await diffBetween(h, fn.p, fn.start, red ?? fn.start)
   const since = kind === 'delta' && prev ? await diffBetween(h, fn.p, prev, fn.now) : ''
   const live = (await withDetails(h, r, fn.f.id)).filter(x => !CLOSED.has(x.status))
   // the round-1 ticket carries the reviewer's method (plan §4.1, §8), all read before any ticket is issued, so a file that
@@ -70,7 +80,7 @@ async function roundTickets(h: FlowHost, r: FlowRecord, fn: FeatureNow, kind: 'r
       ? reviewTicketText({ f: fn.f.id, nonce, pluginProject, acs, rubrics: rubricsOf(type), diff: fn.diffText, redDiff, method })
       : deltaTicketText({ f: fn.f.id, nonce, pluginProject, findings: live, diff: since, fixMap: r.fixMap ?? {}, disputes: s.disputes, rubrics: rubricsOf(type) })
     const v = await activeView(h), base = v.mode === 'on' ? v.record : r
-    const id = await issueTicket(h, base, { role: roleOf(type), f: fn.f.id, kind, typescriptShare: shareFor(type), build, ...(ids.length === 0 && also ? { also } : {}) })
+    const id = await issueTicket(h, base, { role: roleOf(type), f: fn.f.id, kind, share: shareFor(base, type), build, ...(ids.length === 0 && also ? { also } : {}) })
     if (id === null) return { reason: 'split', vars: { id: fn.f.id } }
     ids.push(id)
   }
@@ -89,8 +99,9 @@ async function openRound(h: FlowHost, r: FlowRecord, fn: FeatureNow, kind: 'revi
   const ids = await roundTickets(h, r, fn, kind, prev, reviewers(r, fn), round.also)
   if (!Array.isArray(ids)) return ids
   // a scope correction's claims (FL ids) served their round: they cover nothing in the round that opens now (D11-1, D11-4)
-  settled(await updateRecord(h.io, h.home, r.flowId, h.sessionId, y => ({ ...y, task: 'B4', round: { f: fn.f.id, tree: fn.now, ...(prev ? { prev } : {}), tickets: ids }, ...(y.fixMap ? { fixMap: Object.fromEntries(Object.entries(y.fixMap).filter(([id]) => !/^FL-\d+$/.test(id))) } : {}) })))
-  await h.submit(START_PROMPT)
+  const opened = settled(await updateRecord(h.io, h.home, r.flowId, h.sessionId, y => ({ ...y, task: 'B4', round: { f: fn.f.id, tree: fn.now, ...(prev ? { prev } : {}), tickets: ids }, ...(y.fixMap ? { fixMap: Object.fromEntries(Object.entries(y.fixMap).filter(([id]) => !/^FL-\d+$/.test(id))) } : {}) })))
+  // A1: the round's tree and the one before it kept at once; main is told the tickets are ready whatever that does
+  try { await keepTrees(h.io, fn.p, r.flowId, neededTrees(opened)) } finally { await h.submit(START_PROMPT) }
   return null
 }
 
@@ -140,7 +151,15 @@ export async function onReply(h: FlowHost, t: TicketRecord, text: string): Promi
     const unruled = r.findings.filter(x => x.f === t.f && x.id.startsWith(mine) && (x.sev === 'CRITICAL' || x.sev === 'HIGH') && (x.status === 'fixed-unconfirmed' || x.status === 'disputed') && !(x.id in replies.status)).map(x => x.id)
     if (unruled.length) return void (await mutateSession(h, s => ({ ...s, runs: { ...s.runs, [t.id]: { ok: false, reason: `the delta reply gives no verdict on ${unruled.join(', ')}` } } })))
   }
-  const hunks = t.kind === 'delta' && prev && r.round ? changedHunks(parseDiff(await diffBetween(h, await gitPaths(h.io, r.root), prev, r.round.tree))) : []
+  let hunks: ReturnType<typeof changedHunks> = []
+  if (t.kind === 'delta' && prev && r.round) {
+    // A1: a round tree deleted by hand and pruned is looked up first (never a git error or a fetch): the run is not
+    // attested, and the next flow_check re-anchors (AC-A1-2)
+    const p = await gitPaths(h.io, r.root), tree = r.round.tree
+    const diff = (await present(h.io, p, prev)) && (await present(h.io, p, tree)) ? await diffBetween(h, p, prev, tree).catch(() => null) : null
+    if (diff === null) return void (await mutateSession(h, s => ({ ...s, runs: { ...s.runs, [t.id]: { ok: false, reason: 'the change since the round before could not be read' } } })))
+    hunks = changedHunks(parseDiff(diff))
+  }
   // the findings are worked out inside the write, on the newest record: two replies at once (the code and the security
   // reviewer) both keep theirs, and the new ids follow every id already there
   const box: { next: Finding[] } = { next: [] }
@@ -172,9 +191,11 @@ async function seal(h: FlowHost, r: FlowRecord, fn: FeatureNow): Promise<void> {
   await writeView(h, `.snagon/flow/${fn.f.id}.json`, `${JSON.stringify(sealed, null, 1)}\n`)
   const next = pointerFields(afterPass({ phase: 'build', task: 'B5', feature: fn.f.id }, { features: (r.features ?? []).map(f => f.id), baselineRed: false }))
   const after = settled(await updateRecord(h.io, h.home, r.flowId, h.sessionId, x => {
-    const { round: _r, fixMap: _m, feature: _f, ...rest } = x
+    const { round: _r, fixMap: _m, feature: _f, redAllow, ...rest } = x
+    // a /flow-allow red never used does not outlive its feature; another feature's stays
+    const keep = redAllow && redAllow.feature !== fn.f.id ? { redAllow } : {}
     // the closed findings go; their numbers stay used (lastIds), so no later finding takes one
-    return { ...rest, ...next, lastIds: usedIds(x.findings, x.lastIds), seals: [...x.seals, sealed], tickets: x.tickets.filter(t => t.f !== fn.f.id), findings: x.findings.filter(y => y.f !== fn.f.id || !CLOSED.has(y.status) || y.status === 'waived') }
+    return { ...rest, ...keep, ...next, lastIds: usedIds(x.findings, x.lastIds), seals: [...x.seals, sealed], tickets: x.tickets.filter(t => t.f !== fn.f.id), findings: x.findings.filter(y => y.f !== fn.f.id || !CLOSED.has(y.status) || y.status === 'waived') }
   }))
   const gone = new Set(r.tickets.filter(t => t.f === fn.f.id).map(t => t.id))
   await mutateSession(h, s => ({ ...s, tickets: Object.fromEntries(Object.entries(s.tickets).filter(([id]) => !gone.has(id))) }))

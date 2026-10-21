@@ -34,6 +34,16 @@ commit `aeac41d4d005999432bb7312f7ff06383a91d59d`), under the MIT License (`LICE
 them in its tickets as text; Claude Code does not load them as skills or agents. `flow/vendor/agent-skills.lock.json`
 lists every file with its hash, and `docs/vendor-update.md` says how they are updated.
 
+## sandbox-runtime (Apache-2.0)
+
+The strict judge profile that the flow tried in 0.6.0 and does not use (`judgeProfileStrict` in `hooks/flow-sandbox.ts`,
+checked by `tests/judge-strict.check.mjs`) starts from the fixed rules of the macOS sandbox profile of
+**sandbox-runtime** 0.0.80 by **Anthropic** (https://github.com/anthropics/sandbox-runtime, npm package
+`@anthropic-ai/sandbox-runtime`, `dist/sandbox/macos-sandbox-utils.js`), under the Apache License 2.0
+(`LICENSES/sandbox-runtime-Apache-2.0.txt`). This mod takes only the rules that hold with every option off, leaves out
+the channels the flow's own judge closes and two rules that serve features the judge does not use, and puts the judge's
+own rules after them.
+
 ## This mod
 
 The hooks module that runs the harness (session journal, end-of-session handoff, project memory, the safety gate

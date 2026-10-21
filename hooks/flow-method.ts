@@ -1,9 +1,10 @@
 // The vendored methods in tickets (plan v7.1 §8): a role's method reaches its agent as ticket text only, under
 // `## Reference method (agent-skills, MIT, <sha8>)`, then flow/vendor/overrides.md. The texts are the role's routed
-// skills and, for B1, the testing-patterns sections §8.1 cites. A vendored file that cannot be read, or a lock without a
-// commit, fails the ticket loudly; a change to them after S2 is caught by the plugin integrity hash at flow_check.
-import { RED_TESTING, ROUTING } from '../flow/data/routing'
-import type { Role } from '../flow/data/types'
+// skills and, for B1, the flow stack's testing sections (R2 plan §4.4): the testing-patterns ones §8.1 cites, or those of
+// one of the mod's own skills under its own heading. A file that cannot be read, or a lock without a commit, fails the
+// ticket loudly; a change to them after S2 is caught by the plugin integrity hash at flow_check.
+import { ROUTING } from '../flow/data/routing'
+import type { Role, Stack } from '../flow/data/types'
 import type { Io } from './session'
 
 export const VENDOR_DIR = 'flow/vendor/agent-skills'
@@ -31,35 +32,45 @@ function headingsOf(lines: readonly string[]): Heading[] {
 const cites = (heading: string, cited: string): boolean => heading === cited || (heading.startsWith(cited) && /^[\s(]/.test(heading.slice(cited.length)))
 
 /** The sections whose headings `wanted` cites, in that order, each from its heading to the next heading at its level or
- * above. A cited heading that is not there fails loudly: the vendored text and the citation no longer match. */
-export function sectionsOf(text: string, wanted: readonly string[]): string[] {
+ * above. A cited heading that is not there fails loudly, naming the text (`from`, its file): the text and the citation
+ * no longer match. */
+export function sectionsOf(text: string, wanted: readonly string[], from = 'the vendored text'): string[] {
   const lines = text.split('\n'), heads = headingsOf(lines)
   return wanted.map(w => {
     const i = heads.findIndex(x => cites(x.text, w)), h = heads[i]
-    if (!h) throw new Error(`flow: the vendored text has no section "${w}"`)
+    if (!h) throw new Error(`flow: ${from} has no section "${w}"`)
     const end = heads.slice(i + 1).find(x => x.level <= h.level)?.at ?? lines.length
     return lines.slice(h.at, end).join('\n').trim()
   })
 }
 
-/** §8: the heading with the locked commit, the method texts, then the overrides. */
-export const methodSection = (sha: string, texts: readonly string[], overrides: string): string =>
-  [`## Reference method (agent-skills, MIT, ${sha.slice(0, 8)})`, ...texts.map(t => t.trim()), overrides.trim()].join('\n\n')
+/** §8: the heading with the locked commit, the method texts, then the overrides; `own`, sections of one of the mod's own
+ * skills (R2 plan §4.4), goes before the overrides under that skill's heading. */
+export const methodSection = (sha: string, texts: readonly string[], overrides: string, own?: { readonly name: string; readonly texts: readonly string[] }): string => [
+  ...(texts.length ? [`## Reference method (agent-skills, MIT, ${sha.slice(0, 8)})`, ...texts.map(t => t.trim())] : []),
+  ...(own?.texts.length ? [`## Reference method (${own.name}, MIT)`, ...own.texts.map(t => t.trim())] : []),
+  overrides.trim(),
+].join('\n\n')
 
-/** The method section of a role's ticket ('' for a role without one), read from the installed mod. */
-export async function methodText(io: Pick<Io, 'read' | 'pluginRoot'>, role: Role): Promise<string> {
+/** The method section of a role's ticket ('' for a role without one), read from the installed mod. B1's quotes the flow
+ * stack's testing text (`testing`, its data's `redTesting`); the other roles take none. */
+export async function methodText(io: Pick<Io, 'read' | 'pluginRoot'>, role: Role, testing?: Stack['redTesting']): Promise<string> {
   const read = async (rel: string): Promise<string> => {
     try {
       return await io.read(`${io.pluginRoot}/${rel}`)
     } catch (e) {
-      throw new Error(`flow: the vendored file ${rel} could not be read (${e instanceof Error ? e.message : String(e)}); reinstall the mod`)
+      throw new Error(`flow: the mod's file ${rel} could not be read (${e instanceof Error ? e.message : String(e)}); reinstall the mod`)
     }
   }
+  if (role === 'red' && !testing) throw new Error("flow: a RED ticket needs the flow stack's testing text")
+  const red = role === 'red' ? testing : undefined
+  const cited = async (rel: string, wanted: readonly string[]): Promise<string[]> => sectionsOf(await read(rel), wanted, rel)
   const texts = [
     ...(await Promise.all(ROUTING.skills[role].map(s => read(`${VENDOR_DIR}/skills/${s}/SKILL.md`)))),
-    ...(role === 'red' ? sectionsOf(await read(`${VENDOR_DIR}/references/${RED_TESTING.reference}.md`), RED_TESTING.sections) : []),
+    ...(red?.from === 'reference' ? await cited(`${VENDOR_DIR}/references/${red.name}.md`, red.sections) : []),
   ]
-  if (!texts.length) return ''
+  const own = red?.from === 'skill' ? { name: red.name, texts: await cited(`skills/${red.name}/SKILL.md`, red.sections) } : undefined
+  if (!texts.length && !own) return ''
   const lock = await read(VENDOR_LOCK)
   let sha: unknown
   try {
@@ -68,5 +79,5 @@ export async function methodText(io: Pick<Io, 'read' | 'pluginRoot'>, role: Role
     sha = undefined
   }
   if (typeof sha !== 'string' || !/^[0-9a-f]{40}$/.test(sha)) throw new Error(`flow: ${VENDOR_LOCK} names no commit sha; reinstall the mod`)
-  return methodSection(sha, texts, await read(OVERRIDES))
+  return methodSection(sha, texts, await read(OVERRIDES), own)
 }

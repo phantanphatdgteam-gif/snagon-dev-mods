@@ -1,7 +1,8 @@
 import { describe, expect, test } from 'claude-code/testing'
 import { TASKS, SOURCES, DERIVED, CAPS, RETRY, BLOCKED_REASONS, judgeRunBound, capsTable } from '../flow/data/phases'
-import { ROUTING, routedAgent, dispatchType, TYPESCRIPT_SHARE } from '../flow/data/routing'
-import { TYPESCRIPT } from '../flow/data/stacks'
+import { ROUTING, routedAgent, dispatchType, STACK_SHARE } from '../flow/data/routing'
+import { TYPESCRIPT } from '../flow/data/stacks/typescript'
+import { COMMON_DENY_READ } from '../flow/data/common'
 import { RUBRICS, SEVERITY, SEVERITY_ORDER } from '../flow/data/rubrics'
 import { DOD, NOT_CHECKED } from '../flow/data/dod'
 import { TEXTS, ADDRESS_FALLBACK, placeholders, fill } from '../flow/data/templates'
@@ -59,12 +60,12 @@ describe('flow data', () => {
     expect([ROUTING.vendored.skills.length, ROUTING.vendored.agents.length, ROUTING.vendored.references.length]).toEqual([14, 3, 7])
     expect(ROUTING.pluginProjectSkills).toEqual(['plugin-authoring'])
     for (const tool of ['WebFetch', 'WebSearch', 'Monitor', 'SendMessage', 'Workflow']) expect(ROUTING.allowTools).not.toContain(tool)
-    expect(TYPESCRIPT_SHARE).toBe(0.7)
-    expect(routedAgent('reviewer', 0.7)).toBe('typescript-reviewer')
-    expect(routedAgent('reviewer', 0.69)).toBe('code-reviewer')
-    expect(routedAgent('buildFixer', 1)).toBe('build-error-resolver')
+    expect(STACK_SHARE).toBe(0.7)
+    expect(routedAgent('reviewer', 0.7, TYPESCRIPT.routing)).toBe('typescript-reviewer')
+    expect(routedAgent('reviewer', 0.69, TYPESCRIPT.routing)).toBe('code-reviewer')
+    expect(routedAgent('buildFixer', 1, TYPESCRIPT.routing)).toBe('build-error-resolver')
     // the Agent tool and a spawn rewrite name a plugin's agent `<plugin>:<name>` exactly; a bare name is refused (2.1.302)
-    for (const r of roles) for (const share of [0, 1]) expect(dispatchType(routedAgent(r, share))).toBe(`snagon-dev-mods:${routedAgent(r, share)}`)
+    for (const r of roles) for (const share of [0, 1]) expect(dispatchType(routedAgent(r, share, TYPESCRIPT.routing))).toBe(`snagon-dev-mods:${routedAgent(r, share, TYPESCRIPT.routing)}`)
     expect(ROUTING.references.red).toEqual(['testing-patterns'])
   })
 
@@ -159,7 +160,8 @@ describe('flow data', () => {
     expect(TYPESCRIPT.publish.prefixes.yarn).toEqual(['npm'])
     expect(TYPESCRIPT.publish.valueOptions).toContain('--workspace')
     expect(TYPESCRIPT.packageManagers.find(p => p.id === 'pnpm')?.cacheDirs).toContain('~/Library/Caches/pnpm')
-    for (const f of ['~/.npmrc', '~/.ssh', '~/.config/gh']) expect(TYPESCRIPT.sandbox.denyRead).toContain(f)
+    expect(TYPESCRIPT.sandbox.denyRead).toContain('~/.npmrc')
+    for (const f of ['~/.ssh', '~/.config/gh', '~/.netrc']) expect(COMMON_DENY_READ).toContain(f)
   })
 
   test('rubric ids are unique, severities valid, and the mod-judged criteria are marked det', () => {
@@ -188,6 +190,13 @@ describe('flow data', () => {
     expect(fill('vi', 'escalate.head', { scope: 'F-01', kind: fill('vi', 'kind.edit', {}), address: ADDRESS_FALLBACK.vi })).toBe('F-01 đã dùng hết số vòng sửa; Chủ dự án quyết định bước tiếp theo.')
     expect(() => fill('vi', 'card.next', { step: 'x' })).toThrow()
     expect(() => fill('en', 'no.such.key', {})).toThrow()
+  })
+
+  test('the reminder printed when a flow ends names the reinstall step of both stacks, in both languages', () => {
+    for (const lang of ['en', 'vi'] as const) {
+      const text = fill(lang, 'end.careful', {})
+      expect([lang, text.includes('npm ci'), text.includes('pyproject.toml'), text.includes('.venv')]).toEqual([lang, true, true, true])
+    }
   })
 
   test('vitest: a shared error after several FAIL lines goes to each of them (F16); a project label before the file is read (F17)', () => {

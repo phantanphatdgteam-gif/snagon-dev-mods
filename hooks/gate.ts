@@ -7,7 +7,7 @@ import {
 } from './vendor/destructive'
 import { checkCommand } from './vendor/no-verify'
 import { hashOf, type Io } from './session'
-import { isForbiddenPath, scanDiff } from './secrets'
+import { addedLines, isCertificateLines, isCertificateOnly, isForbiddenPath, scanDiff, CERT_PATH } from './secrets'
 import type { GitIntent } from './git-intent'
 
 export type GateState = { checked: readonly string[]; denials: number }
@@ -143,9 +143,31 @@ export async function publishReason(git: GitRead, revs: readonly string[], opts:
   const range = [...revs, `--max-count=${PUSH_SCAN_MAX}`]
   // -z: names unquoted (git C-quotes odd characters); --text: a file git calls binary still shows its added lines.
   const names = (await read(['log', '-z', '--name-only', '--format=', '--diff-filter=d', '--diff-merges=first-parent', ...range])).split('\0')
-  const diff = await read(['log', '-p', '-U0', '--text', '--no-color', '--no-ext-diff', '--no-textconv', '--diff-merges=first-parent', '--format=', ...range])
+  // the prefixes are pinned: a repository's diff.dstPrefix or diff.noprefix would move the names the diff files lines under
+  const diff = await read(['log', '-p', '-U0', '--text', '--no-color', '--no-ext-diff', '--no-textconv', '--src-prefix=a/', '--dst-prefix=b/', '--diff-merges=first-parent', '--format=', ...range])
   const tree = opts.headTree ? (await read(['ls-tree', '-r', '--name-only', '-z', 'HEAD'])).split('\0') : []
-  return verdict([...names, ...tree], diff, failed)
+  const certs = await certificateFiles(names, diff, opts.headTree ? { paths: new Set(tree), read } : undefined)
+  return verdict([...names, ...tree].filter(n => !certs.has(n)), diff, failed)
+}
+
+/**
+ * The `.pem` paths, by their exact names, that hold certificates and nothing else wherever this commit or publish
+ * carries them: every line `diff` adds to one (`names` are the paths it changes) passes as certificate text, and so does
+ * its copy at HEAD when `head` lists it, else the lines added taken as the whole file. A public certificate (a CA in
+ * test fixtures: 535 trial, M-10) is not private data; any other content, a copy that cannot be read, or a changed path
+ * with no diff header under its exact name (git quoted it) keeps the path refused.
+ * ASSUMPTION(GAP-R2-0.6-143): content excuses `.pem` alone; `.key`, `.p12` and `.pfx` stay refused by name.
+ */
+async function certificateFiles(names: readonly string[], diff: string, head?: { paths: ReadonlySet<string>; read: (args: string[]) => Promise<string> }): Promise<Set<string>> {
+  const added = addedLines(diff), changed = new Set(names), out = new Set<string>()
+  for (const p of new Set([...names, ...(head?.paths ?? [])])) {
+    if (!CERT_PATH.test(p)) continue
+    const lines = added.get(p)
+    // a key added and then replaced within the range still reaches the remote, so the range's lines are read first
+    if ((changed.has(p) && lines === undefined) || !isCertificateLines(lines ?? [])) continue
+    if (isCertificateOnly(head?.paths.has(p) ? await head.read(['cat-file', 'blob', `HEAD:${p}`]) : (lines ?? []).join('\n'))) out.add(p)
+  }
+  return out
 }
 
 /** Why a commit or push would publish a secret or a private path, or null. */
@@ -158,7 +180,9 @@ export async function gitSecretReason(io: Io, root: string, intent: GitIntent): 
     const wide = (intent.commitAll || intent.commitPaths) && (await git(['rev-parse', '--verify', '--quiet', 'HEAD'])).ok
     const base = wide ? ['HEAD'] : ['--cached']
     const names = (await read(['diff', ...base, '--name-only', '-z', '--diff-filter=d'])).split('\0')
-    const found = verdict(names, await read(['diff', ...base, '-U0', '--text', '--no-color', '--no-ext-diff', '--no-textconv']), failed)
+    const diff = await read(['diff', ...base, '-U0', '--text', '--no-color', '--no-ext-diff', '--no-textconv', '--src-prefix=a/', '--dst-prefix=b/'])
+    const certs = await certificateFiles(names, diff)
+    const found = verdict(names.filter(n => !certs.has(n)), diff, failed)
     if (found) return found
   }
   // Every local commit no remote has yet, on any branch or a detached HEAD (and tags when the push sends tags):
@@ -177,5 +201,6 @@ function verdict(names: readonly string[], diff: string, failed: readonly string
     ...forbidden.map(f => `- private path: ${f}`),
     ...secrets.map(s => `- possible secret in ${s}`),
     'Remove the secret or unstage the file (git restore --staged <file>), then retry. Per-user data (.snagon/), .env files and keys never go to git.',
+    ...(forbidden.some(f => CERT_PATH.test(f)) ? ['A .pem passes only when it holds certificates alone (no key, no other block), in every version this sends.'] : []),
   ].join('\n')
 }

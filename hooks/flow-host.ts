@@ -1,6 +1,7 @@
-// Flow's view of the engine (plan v7.1 §2.3, §2.4, F14, F40, F41): register.ts builds a FlowHost of plain functions over
-// `$` (the only file that uses `$`); this module finds the repository's active flow (cached ACTIVE_TTL_MS), keeps the
-// session's flow state, builds the guard's contexts from the record, that state and a call's facts, and blocks the flow.
+// Flow's view of the engine (plan v7.1 §2.3, §2.4, F14, F40, F41): flow-wiring.ts builds a FlowHost of plain functions
+// over `$` (only register.ts, flow-wiring.ts and engine-io.ts use `$`); this module finds the repository's active flow
+// (cached ACTIVE_TTL_MS), keeps the session's flow state, builds the guard's contexts from the record, that state and a
+// call's facts, and blocks the flow.
 // What never changes within a load (the platform, the repository key, the plugin roots) is read once.
 import type { FlowSession } from '../types'
 import type { Io, RunResult } from './session'
@@ -9,7 +10,7 @@ import { git, gitPaths } from './flow-git'
 import { flowDir, listActive, repoKeyOf, updateRecord, type Blocked, type FlowRecord, type LockHolder, type UpdateResult, withBlock } from './flow-state'
 import { activeLookup, viewOf, type FlowView, type GuardCtx, type GuardFs } from './flow-guard'
 import { ROUTING } from '../flow/data/routing'
-import { TYPESCRIPT } from '../flow/data/stacks'
+import { PUBLISH_UNION } from '../flow/data/common'
 import type { Language } from '../flow/data/types'
 
 /** A call's working directory (`$.session.cwd()` read in its hook: a subagent's own; Bash cd moves it) and the permission
@@ -57,7 +58,7 @@ export type FlowHost = {
 }
 
 export const MOD_TOOLS: readonly string[] = ['memory_save', 'memory_search', 'memory_get', 'flow_status', 'flow_check'].map(n => `mcp__snagon-dev-mods__${n}`)
-export const emptySession = (): FlowSession => ({ pending: {}, s2b: null, tickets: {}, started: {}, startedAt: {}, ended: {}, details: {}, claimHeld: false, claim: null, shown: null, sandbox: null, notes: [], nudges: {}, setupArgs: null, intent: null, runs: {}, disputes: {}, waive: null, release: null, spend: null, costBoost: false })
+export const emptySession = (): FlowSession => ({ pending: {}, s2b: null, tickets: {}, started: {}, startedAt: {}, ended: {}, details: {}, claimHeld: false, claim: null, shown: null, sandbox: null, notes: [], nudges: {}, setupArgs: null, intent: null, runs: {}, disputes: {}, waive: null, allow: null, release: null, spend: null })
 
 type Statics = { rootReal: string; caseFold: boolean; darwin: boolean; linkArgv: readonly string[]; repoKey: string | null; hasGit: boolean; protectedRoots: string[] }
 const statics = new Map<string, Promise<Statics>>()
@@ -188,7 +189,8 @@ export async function guardCtx(h: FlowHost, r: FlowRecord, f: Facts, s: FlowSess
     // only what a ticket loads with the Skill tool: the vendored methods reach agents as ticket text (plan §8) and are no
     // skills, so their names could only load a same-named skill from somewhere else (step-11 security review)
     skills: r.setup?.pluginProject ? ROUTING.pluginProjectSkills : [],
-    protectedRoots: (await staticsOf(h)).protectedRoots, publish: TYPESCRIPT.publish,
+    // every stack's publishing commands, whatever stack this flow froze (A-3)
+    protectedRoots: (await staticsOf(h)).protectedRoots, publish: PUBLISH_UNION,
     ...(red ? { redScope: red } : {}), ...(r.setup ? { journalDir: r.setup.journalDir } : {}), ...(s.s2b ? { s2b: s.s2b } : {}), ...(f.mode ? { permissionMode: f.mode } : {}),
   }
 }

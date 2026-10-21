@@ -1,5 +1,6 @@
-// What the side modules may do outside the module, as plain functions (the engine's `$` stays in register.ts, the
-// only file the validator follows it through), plus facts about the session several hooks need.
+// What the side modules may do outside the module, as plain functions (the engine's `$` stays in register.ts,
+// flow-wiring.ts and engine-io.ts, which reach each other only through function declarations, as the validator
+// requires), plus facts about the session several hooks need.
 
 export type FsItem = { name: string; kind: string; size: number; mtimeMs: number }
 // is*Truncated: the engine keeps the first 4 MiB of each stream; a check that reads output refuses past it.
@@ -21,7 +22,8 @@ export type LocalConfig = { language: 'en' | 'vi'; decisionWord: string; lessonW
 export type SessionFacts = { root: string; exempt: boolean; config: LocalConfig; home: string }
 
 export const DEFAULT_CONFIG: LocalConfig = { language: 'en', decisionWord: 'Decision', lessonWord: 'Lesson', journalDir: '.snagon/journal', autoInstall: true, address: '' }
-// Environment variables that mark a session started by a loop runner or by this mod's own handoff worker.
+// Environment variables that mark a session started by a loop runner or by this mod's own handoff worker. SNAGON_WORKER
+// is the one any harness sets; LOOP535_ROLE is the 535 loop's own name, kept (owner decision 2026-10-19; step 14 docs).
 export const EXEMPT_VARS = ['LOOP535_ROLE', 'HANDOFF_WORKER', 'SNAGON_WORKER'] as const
 
 /** Parses a config file (the user's `~/.snagon/config.json` or the project's `.snagon/config.json`); a missing, unknown or

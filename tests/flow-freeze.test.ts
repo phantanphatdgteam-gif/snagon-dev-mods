@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 import { ownerCommand } from '../hooks/flow-cmd'
-import { applySetup, setupHash } from '../hooks/flow-freeze'
+import { applySetup, sandboxProblems, setupHash } from '../hooks/flow-freeze'
 import { emptySession, forgetFlowCaches } from '../hooks/flow-host'
 import { checkVerdict, forgetModes, liveCall, noteMode } from '../hooks/flow-live'
 import { flowCard, flowStatus } from '../hooks/flow-turn'
@@ -82,7 +82,7 @@ describe('flow-freeze: S2 approval', () => {
     expect(r).toMatchObject({ phase: 'setup', task: 'S2b', lifecycle: 'active', root: ROOT, branch: 'main', setup: { remote: 'origin', branch: 'main', journalDir: '.snagon/journal' } })
     expect(r?.setup?.commands.map(c => c.id)).toEqual(['test', 'lint'])
     expect(r?.approvals.map(a => [a.kind, a.origin])).toEqual([['setup', 'composer']])
-    expect(Object.keys(r?.frozen ?? {})).toEqual(expect.arrayContaining(['post', 'plugin', 'runner', 'remote.url', 'remote.rules', 'remote.global', 'env.PATH']))
+    expect(Object.keys(r?.frozen ?? {})).toEqual(expect.arrayContaining(['post', 'plugin', 'runner:v2', 'runner:v2.facts', 'runner:v2.load', 'remote.url', 'remote.rules', 'remote.global', 'env.PATH']))
     expect(r?.frozen['env.PATH']).toBe('/usr/bin:/bin') // the approved draft's filtered PATH (NK-02)
     expect(r?.frozen.sandbox).toBeUndefined()
     expect(r?.lock?.sessionId).toBe(SESSION_ID)
@@ -95,6 +95,23 @@ describe('flow-freeze: S2 approval', () => {
     expect(w.submitted[0]).toContain(s?.s2b?.post ?? '-')
     expect(await flowCard(w.host)).toContain('Next: the agent writes .claude/settings.local.json exactly as approved. Command: Write')
     expect(JSON.parse(await flowStatus(w.host)).next).toContain(s?.s2b?.post ?? '-')
+  })
+
+  test('an echo shown for stack=python in a project with two stacks is rebuilt with it at approval and freezes python (AC-STK-15)', async () => {
+    const w = world({ files: { [`${ROOT}/pyproject.toml`]: '[project]\nname = "x"\n' } })
+    expect((await run(w, 'flow-setup')).text).toContain('several stacks match here (typescript, python)')
+    await run(w, 'flow-setup stack=python')
+    expect(w.session().value?.setupArgs).toEqual({ overrides: {}, tools: [], mcp: [], stack: 'python' })
+    const hash8 = w.session().value?.pending.setup?.hash.slice(0, 8) ?? ''
+    expect((await run(w, `flow-approve setup ${hash8}`)).text).toContain('Approved.')
+    expect([latest(w)?.setup?.stack, latest(w)?.setup?.commands.map(c => c.argv.join(' '))]).toEqual(['python', ['.venv/bin/pytest']])
+  })
+
+  test('the recheck of S1\'s sandbox refusals (probe, flow_check) protects a git common dir outside the project too (S-12, security review r4)', async () => {
+    const common = `${HOME}/main/.git`, settings = { user: { sandbox: { filesystem: { allowWrite: ['~/main'] } } } }
+    const worktree = (argv: readonly string[]) => (argv.includes('rev-parse') ? { exitCode: 0, stdout: `${ROOT}\n${common}\n${common}/worktrees/r\n${common}/worktrees/r/index\n`, stderr: '', isStdoutTruncated: false } : undefined)
+    expect(await sandboxProblems(world({ run: worktree, settings }).host, activeRecord())).toContain('user:filesystem.allowWrite')
+    expect(await sandboxProblems(world({ settings }).host, activeRecord())).not.toContain('user:filesystem.allowWrite')
   })
 
   test('settings that already hold the block skip the Write: main runs the probe at once', async () => {
@@ -225,10 +242,12 @@ describe('flow-freeze: S2b and the sandbox probe', () => {
   })
 
   test('a re-freeze keeps the phase and task, clears the block and the frozen sandbox, and approvals add up', async () => {
-    const w = world({ files: recordFile(activeRecord({ blocked: { reason: 'sandboxMismatch', vars: {} }, frozen: { sandbox: '{}', post: 'old' }, approvals: [{ kind: 'plan', echoHash: 'h', at: 1, origin: 'composer' }] })) })
+    const w = world({ files: recordFile(activeRecord({ blocked: { reason: 'sandboxMismatch', vars: {} }, frozen: { sandbox: '{}', post: 'old', 'dep:F-01': 'yes', 'dep:F-00': 'rebased', 'rebase:F-00': 'a>b' }, approvals: [{ kind: 'plan', echoHash: 'h', at: 1, origin: 'composer' }] })) })
     await approved(w)
     const r = latest(w)
     expect(r).toMatchObject({ phase: 'build', task: 'B2', feature: 'F-01' })
+    // AC-RI-3: the new freeze takes the runner hash again, so a token not used yet is used up; the history stays
+    expect([r?.frozen['dep:F-01'], r?.frozen['dep:F-00'], r?.frozen['rebase:F-00']]).toEqual(['rebased', 'rebased', 'a>b'])
     expect(r?.blocked).toBeUndefined()
     expect(r?.frozen.sandbox).toBeUndefined()
     expect(r?.approvals.map(a => a.kind)).toEqual(['plan', 'setup'])

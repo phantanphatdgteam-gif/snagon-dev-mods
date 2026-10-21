@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'claude-code/testing'
-import { findSecrets, isForbiddenPath, scanDiff, redactSecrets, REDACTED_LINE } from '../hooks/secrets'
+import { addedLines, findSecrets, isCertificateLines, isCertificateOnly, isForbiddenPath, scanDiff, redactSecrets, REDACTED_LINE } from '../hooks/secrets'
 
 const FAKE_ANTHROPIC = 'sk-ant-' + 'api03-' + 'A'.repeat(30)
 const FAKE_GITHUB = 'ghp_' + 'b'.repeat(36)
@@ -91,6 +91,48 @@ describe('secrets', () => {
     }
     for (const p of ['src/env.py', 'docs/local-notes.md', 'mods/demo/hooks/memory.ts', '.envrc.example', '.env.example', 'config/.env.sample', '.env.template']) {
       expect(isForbiddenPath(p)).toBe(false)
+    }
+  })
+
+  test('a PEM file of certificates alone is told apart from one with a key, another block or other text (535 trial, M-10)', () => {
+    const cert = ['-----BEGIN CERTIFICATE-----', ...FULL, LAST, '-----END CERTIFICATE-----']
+    expect(isCertificateOnly(cert.join('\n'))).toBe(true)
+    expect(isCertificateOnly([...cert, '', ...cert, ''].join('\r\n'))).toBe(true) // a bundle, CRLF
+    expect(isCertificateOnly(['# Issuer: CN=Test CA', 'subject=CN=Test', 'issuer=CN=Test CA', ...cert].join('\n'))).toBe(true)
+    const bad: Record<string, string[]> = {
+      'certificate with its key': [...cert, BEGIN, ...FULL, LAST, END],
+      'key alone': [BEGIN, ...FULL, LAST, END],
+      'another block': ['-----BEGIN EC PARAMETERS-----', 'BggqhkjOPQMBBw==', '-----END EC PARAMETERS-----', ...cert],
+      'key in another form between blocks': ['PuTTY-User-Key-File-2: ssh-rsa', ...FULL, ...cert],
+      'BEGIN without END': cert.slice(0, -1),
+      'BEGIN inside a block': ['-----BEGIN CERTIFICATE-----', ...cert],
+      'END outside a block': ['-----END CERTIFICATE-----', ...cert],
+      'marker inside a line': [`x ${cert[0]}`, ...cert.slice(1)],
+      'not base64 inside': ['-----BEGIN CERTIFICATE-----', 'Proc-Type: 4,ENCRYPTED', ...FULL, '-----END CERTIFICATE-----'],
+      'token in a comment': [`# ${FAKE_GITHUB}`, ...cert],
+      'empty': [],
+      'text only': ['hello'],
+    }
+    for (const [name, lines] of Object.entries(bad)) expect([name, isCertificateOnly(lines.join('\n'))]).toEqual([name, false])
+    expect(isCertificateLines([...FULL, LAST])).toBe(true) // a commit that changes body lines only
+    expect(isCertificateLines([...FULL, BEGIN])).toBe(false)
+    expect(isCertificateLines(['-----BEGIN EC PARAMETERS-----'])).toBe(false)
+  })
+
+  test('a diff\'s added lines are kept by file in order, across commits of one log', () => {
+    const diff = ['diff --git a/a.pem b/a.pem', '--- /dev/null', '+++ b/a.pem', '@@ -0,0 +1,2 @@', '+one', '+two', 'diff --git a/b.py b/b.py', '--- a/b.py', '+++ b/b.py', '@@ -1 +1 @@', '-x', '+y',
+      'diff --git a/a.pem b/a.pem', '--- a/a.pem', '+++ b/a.pem', '@@ -2 +2 @@', '-two', '+three',
+      // git writes a tab after a name with a space; a file with lines removed only still shows
+      'diff --git a/my ca.pem b/my ca.pem', '--- a/my ca.pem\t', '+++ b/my ca.pem\t', '@@ -1 +1 @@', '-old', '+new',
+      'diff --git a/c.pem b/c.pem', '--- a/c.pem', '+++ b/c.pem', '@@ -3,2 +2,0 @@', '-gone', '-too'].join('\n')
+    expect([...addedLines(diff)]).toEqual([['a.pem', ['one', 'two', 'three']], ['b.py', ['y']], ['my ca.pem', ['new']], ['c.pem', []]])
+    expect(scanDiff(['diff --git a/my key.txt b/my key.txt', '--- /dev/null', '+++ b/my key.txt\t', '@@ -0,0 +1 @@', `+${FAKE_GITHUB}`].join('\n'))).toEqual(['my key.txt: GitHub token'])
+  })
+
+  test('a private key label with digits is a key block (TSS2, SM2: security review of M-10)', () => {
+    for (const label of ['TSS2 ', 'SM2 ']) {
+      expect(findSecrets(`-----BEGIN ${label}PRIVATE KEY-----`)).toEqual(['private key block'])
+      expect(isCertificateOnly(['-----BEGIN CERTIFICATE-----', ...FULL, '-----END CERTIFICATE-----', `# -----BEGIN ${label}PRIVATE KEY-----`].join('\n'))).toBe(false)
     }
   })
 

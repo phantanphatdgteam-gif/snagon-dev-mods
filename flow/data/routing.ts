@@ -1,16 +1,18 @@
 // Which identity agent, model, skills and references each role uses in a flow ticket (plan v7.1 §3, §8, §8.1).
 // Vendored names refer to flow/vendor/agent-skills (MIT, step 12); a developer check lists what must exist.
-import type { Routing } from './types'
+import type { Role, Routing } from './types'
 
 export const ROUTING: Routing = {
   agents: {
     planner: { agent: 'planner', model: 'opus' },
     red: { agent: 'tdd-guide', model: 'sonnet' },
     author: { agent: 'tdd-guide', model: 'sonnet' },
-    reviewer: { agent: 'code-reviewer', typescript: 'typescript-reviewer', model: 'sonnet' },
+    reviewer: { agent: 'code-reviewer', model: 'sonnet' },
     securityReviewer: { agent: 'security-reviewer', model: 'sonnet' },
     debugger: { agent: 'tdd-guide', model: 'sonnet' },
-    buildFixer: { agent: 'build-error-resolver', model: 'sonnet' },
+    // each stack names its own build fixer (its data's `routing`); the core's is the debugger, as for a stack with none of
+    // its own (GAP-R2-15): build-error-resolver is TypeScript's
+    buildFixer: { agent: 'tdd-guide', model: 'sonnet' },
   },
   skills: {
     planner: ['planning-and-task-breakdown'],
@@ -48,18 +50,24 @@ export const ROUTING: Routing = {
   },
 }
 
-/** B1's testing text (plan §3 B1, §8 routing fallbacks, §8.1): these sections of the vendored testing-patterns reference,
- * which shows TypeScript (the MVP's only stack). tests/vendor.check.mjs reads this line. */
-export const RED_TESTING = { reference: 'testing-patterns', sections: ['Test Structure', 'Test Naming', 'Mock at Boundaries Only', 'Test Anti-Patterns'] } as const
+/** Share of changed lines in the stack's own files (its `ownsFile`) from which the stack's reviewer takes the review (plan
+ * §3 B4; R2 plan §3.1, §4.4). */
+export const STACK_SHARE = 0.7
 
-/** Share of changed lines in TypeScript from which the TypeScript reviewer takes the review (plan §3 B4). */
-export const TYPESCRIPT_SHARE = 0.7
-
-/** The agent a role's ticket goes to, given the share (0..1) of changed lines that are TypeScript. */
-export function routedAgent(role: keyof Routing['agents'], typescriptShare: number): string {
-  const r = ROUTING.agents[role]
-  return typescriptShare >= TYPESCRIPT_SHARE && r.typescript ? r.typescript : r.agent
+/** The agent a role's ticket goes to: the stack's own (its data's `routing`) when it names one, else the core's; the
+ * stack's reviewer only from STACK_SHARE of the changed lines (`share`, 0..1) in the stack's own files (R2 plan §4.4). */
+export function routedAgent(role: Role, share: number, stackAgents: Readonly<Partial<Record<Role, string>>>): string {
+  const own = stackAgents[role]
+  return own && (role !== 'reviewer' || share >= STACK_SHARE) ? own : ROUTING.agents[role].agent
 }
+
+/** The approved commands whose red run goes to the stack's build fixer (R2 plan §4.4, AC-BF-1). */
+const BUILD_COMMANDS: readonly string[] = ['typecheck', 'build', 'lint']
+/** The role of the debug ticket for the red command `id`: the build fixer for a typecheck, build or lint, the debugger for
+ * a test (and any other command, as before 0.6.0).
+ * ASSUMPTION(GAP-R2-0.6-84): with several commands red, the first in the approved order routes the ticket, being the one
+ * whose output it carries (flow-judging runAll, flow-verify verifyStep). */
+export const debugRole = (id: string): 'buildFixer' | 'debugger' => (BUILD_COMMANDS.includes(id) ? 'buildFixer' : 'debugger')
 
 /** The plugin the routed agents ship in (plugin.json `name`; tests/flow-data.check.mjs compares them). */
 export const AGENT_PLUGIN = 'snagon-dev-mods'

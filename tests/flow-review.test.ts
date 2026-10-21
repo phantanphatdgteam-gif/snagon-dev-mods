@@ -37,7 +37,7 @@ describe('flow review: fences and tickets', () => {
     expect(bodyOf(fenceUntrusted(evasion, 'diff', N)).slice(0, 2)).toEqual(['+const a = 1', '+exec(process.env.PAYLOAD)'])
     const review = reviewTicketText({ f: 'F-01', acs: [`AC-001 calls with ${key}`], rubrics: [await freezeRubric(CODE)], diff: '+x', redDiff: '', nonce: N, pluginProject: false }) ?? ''
     expect([review.length > 0, review.includes('sk-ant-')]).toEqual([true, false])
-    const dbg = debugTicketText({ f: 'F-01', failing: `${'x'.repeat(379)} ${key}\nnext line`, pack: '', nonce: N, pluginProject: false }) ?? ''
+    const dbg = debugTicketText({ f: 'F-01', command: 'test', failing: `${'x'.repeat(379)} ${key}\nnext line`, pack: '', nonce: N, pluginProject: false }) ?? ''
     expect([dbg.includes('next line'), dbg.includes('sk-ant-')]).toEqual([true, false])
   })
 
@@ -88,9 +88,11 @@ describe('flow review: fences and tickets', () => {
     const fix = fixTicketText({ f: 'F-01', findings: open, nonce: N, pluginProject: false }) ?? ''
     expect([fix.includes('X-1'), fix.includes('X-2'), fix.includes('X-3'), fix.includes('X-4')]).toEqual([true, false, false, false])
     expect(fix).toContain(`together they cover at most ${MAX_FIX_SPAN} lines`)
-    const dbg = debugTicketText({ f: 'F-01', failing: 'FAIL x\n'.repeat(100), pack: 'PACK', nonce: N, fenceNonce: N, pluginProject: false }) ?? ''
+    const dbg = debugTicketText({ f: 'F-01', command: 'lint', failing: 'FAIL x\n'.repeat(100), pack: 'PACK', nonce: N, fenceNonce: N, pluginProject: false }) ?? ''
     expect(dbg.split('\n').filter(l => l === 'FAIL x').length).toBe(60)
-    const wide = debugTicketText({ f: 'F-01', failing: `${'y'.repeat(1500)}\n`.repeat(60), pack: '', nonce: N, pluginProject: false }) ?? ''
+    // the ticket names the red command, which also routed it (a build fixer gets a lint, typecheck or build failure)
+    expect(dbg).toContain('\nThe approved command lint fails. The output (first 60 lines):\n')
+    const wide = debugTicketText({ f: 'F-01', command: 'test', failing: `${'y'.repeat(1500)}\n`.repeat(60), pack: '', nonce: N, pluginProject: false }) ?? ''
     expect([wide.length > 0, wide.split('\n').filter(l => l === `${'y'.repeat(400)} …[cut]`).length]).toEqual([true, 60])
     for (const field of ['REPRODUCE:', 'LOCALIZE:', 'HYPOTHESIS:', 'FIX:', 'GUARD:']) expect(dbg).toContain(field)
   })

@@ -24,6 +24,11 @@ const COMPOSER = { kind: 'composer' } as const
 export type JudgeSpec = { exit: number; out?: string; report?: unknown }
 /** gitOut is used as given (a test may add answers to it later); GIT fills the keys it lacks. */
 export type DriveOpts = FakeOpts & { judge?: Partial<Record<'test' | 'lint', JudgeSpec>> }
+/** A node_modules tree whose hash (or tree-script error line) the test sets: the TypeScript runner's tree (R2 step 6). */
+export const nodeModules = (t: { hash: string }) => (argv: string[]) =>
+  argv[0] === '/usr/bin/find' ? { exitCode: 0, stdout: `${ROOT}/node_modules\0`, stderr: '' }
+    : (argv[2] ?? '').startsWith('set -u') ? (/^[0-9a-f]{64}$/.test(t.hash) ? { exitCode: 0, stdout: `hash\t${t.hash} *stdin\n`, stderr: '' } : { exitCode: 3, stdout: '', stderr: `${t.hash}\n` })
+    : undefined
 
 export function world(o: DriveOpts = {}) {
   forgetFlowCaches()
@@ -34,7 +39,7 @@ export function world(o: DriveOpts = {}) {
   for (const [k, v] of Object.entries(GIT)) if (!(k in gitOut)) gitOut[k] = v
   const opts: FakeOpts = { ...o, gitOut, files: { [`${ROOT}/package.json`]: PKG, [`${ROOT}/package-lock.json`]: '{}', ...o.files } }
   const w = fakeHost(opts)
-  opts.run = argv => o.run?.(argv) ?? judged(w.files, o.judge ?? {}, argv)
+  opts.run = (argv, init) => o.run?.(argv, init) ?? judged(w.files, o.judge ?? {}, argv)
   return w
 }
 export type W = ReturnType<typeof world>
@@ -148,11 +153,12 @@ export const NEW_FAILED: T = { ...NEW_PASSED, status: 'failed' }
 export const diffKey = (from: string, to: string): string => [...SCAN_DIFF_ARGS, from, to].join(' ')
 export const judgedRuns = (w: W): number => w.runs.filter(a => a.includes('/usr/bin/sandbox-exec')).length
 
-/** B1 and B2 done: RED tests frozen, the author wrote `src` (and `test`, the RED test file as it is now); flow_check judges. */
-export async function atB3(o: { src?: string; test?: string; tests?: readonly T[]; exit?: number; out?: string; extra?: string; plan?: string; assumptions?: string; git?: Record<string, string>; before?: (d: DriveOpts, w: W) => void; start?: (w: W) => void } = {}): Promise<{ w: W; d: DriveOpts }> {
+/** B1 and B2 done: RED tests frozen, the author wrote `src` (and `test`, the RED test file as it is now); flow_check judges.
+ * `lint`: how the lint command answers that judge (green when left out). */
+export async function atB3(o: { src?: string; test?: string; tests?: readonly T[]; exit?: number; out?: string; lint?: JudgeSpec; extra?: string; plan?: string; assumptions?: string; git?: Record<string, string>; before?: (d: DriveOpts, w: W) => void; start?: (w: W) => void; run?: FakeOpts['run'] } = {}): Promise<{ w: W; d: DriveOpts }> {
   const d: DriveOpts = {
     gitOut: { ...HEAD, ...o.git }, judge: { test: { exit: 0, report: GREEN_REPORT } },
-    run: argv => (argv.includes('grep') && argv.includes('AC-[0-9]{3}') ? { exitCode: 0, stdout: 'tests/add.test.ts\0', stderr: '' } : undefined),
+    run: argv => o.run?.(argv) ?? (argv.includes('grep') && argv.includes('AC-[0-9]{3}') ? { exitCode: 0, stdout: 'tests/add.test.ts\0', stderr: '' } : undefined),
   }
   const w = world(d)
   o.start?.(w) // before setup freezes the plugin's files (a later change there is `tampered`)
@@ -166,7 +172,7 @@ export async function atB3(o: { src?: string; test?: string; tests?: readonly T[
   const test = o.test ?? TEST_FILE
   gitOut[diffKey(START, AUTHOR_TREE)] = added('tests/add.test.ts', test) + added('src/add.ts', o.src ?? SRC) + (o.extra ?? '')
   o.before?.(d, w)
-  d.judge = { test: { exit: o.exit ?? 0, out: o.out ?? '', report: reportOf(o.tests ?? [OLD, NEW_PASSED]) } }
+  d.judge = { test: { exit: o.exit ?? 0, out: o.out ?? '', report: reportOf(o.tests ?? [OLD, NEW_PASSED]) }, ...(o.lint ? { lint: o.lint } : {}) }
   await agentRun(w, lastTicket(w)?.id ?? '', ended(`Done.\nASSUMPTIONS: ${o.assumptions ?? 'none'}`), () => { w.setTree(AUTHOR_TREE); w.files.set(`${ROOT}/tests/add.test.ts`, test); w.files.set(`${ROOT}/src/add.ts`, o.src ?? SRC) })
   await flowCheck(w.host)
   return { w, d }
@@ -202,9 +208,9 @@ export async function toH0(o: Parameters<typeof atB3>[0] = {}): Promise<{ w: W; 
 /** The remote as release sees it: the commit to publish, the remote branch's tip (null: not there yet), whether this
  * repository has that tip, the push's answer, and what the publish scan reads. A push that succeeds moves the tip. */
 export type Remote = { head: string; tip: string | null; tipHere?: boolean; push?: RunResult; names?: string; log?: string; down?: boolean; count?: number; subjects?: string; mergeBase?: string; descends?: boolean; configFiles?: string; pushes: number }
-export function remoteGit(rm: Remote): (argv: string[]) => RunResult | undefined {
+export function remoteGit(rm: Remote): (argv: string[], init?: { stdin?: string }) => RunResult | undefined {
   const ok = (stdout = ''): RunResult => ({ exitCode: 0, stdout, stderr: '' })
-  return argv => {
+  return (argv, init) => {
     const g = gitArgs(argv)
     if (!g) return undefined
     if (g.join(' ') === 'rev-parse --verify HEAD^{commit}') return ok(`${rm.head}\n`)
@@ -212,7 +218,8 @@ export function remoteGit(rm: Remote): (argv: string[]) => RunResult | undefined
     if (g[0] === 'merge-base') return g[1] === '--is-ancestor' ? (rm.descends === false ? { exitCode: 1, stdout: '', stderr: '' } : ok()) : ok(`${rm.mergeBase ?? rm.tip ?? ''}\n`)
     if (g[0] === 'ls-remote' && rm.down) return { exitCode: 128, stdout: '', stderr: 'fatal: unable to access the remote' }
     if (g[0] === 'ls-remote') return ok(g[1] === '--' && rm.tip ? `${rm.tip}\trefs/heads/main\n` : '')
-    if (g[0] === 'cat-file') return ok(rm.tip && rm.tipHere ? `${rm.tip} commit\n` : '')
+    // only the remote tip's lookup is the remote's to answer; other objects (the flow's kept trees) are the repository's
+    if (g[0] === 'cat-file' && g[1] !== 'blob' && rm.tip && (init?.stdin ?? '').split('\n').includes(rm.tip)) return ok(rm.tipHere ? `${rm.tip} commit\n` : `${rm.tip} missing\n`)
     if (g[0] === 'rev-list') return ok(g[1] === '--count' ? `${rm.count ?? 1}\n` : `${rm.head}\n`)
     if (g[0] === 'log' && g.includes('--format=%h %s')) return ok(rm.subjects ?? `${rm.head.slice(0, 7)} add numbers\n`)
     if (g[0] === 'log') return ok(g.includes('--name-only') ? rm.names ?? 'src/add.ts\0' : rm.log ?? '')

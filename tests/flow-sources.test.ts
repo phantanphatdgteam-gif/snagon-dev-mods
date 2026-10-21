@@ -1,13 +1,13 @@
 import { describe, expect, test } from 'claude-code/testing'
-import { TYPESCRIPT } from '../flow/data/stacks'
-import { depsVerdict, cmdSourceVerdict, referencedPaths, scriptOperands, argvOperands, scriptNames } from '../hooks/flow-sources'
+import { TYPESCRIPT } from '../flow/data/stacks/typescript'
+import { depsVerdict, cmdSourceVerdict, nodeModulesRebaseBlock, referencedPaths, scriptOperands, argvOperands, scriptNames } from '../hooks/stacks/typescript-sources'
 
 describe('flow command sources', () => {
   const before = JSON.stringify({ name: 'app', scripts: { test: 'vitest run' }, dependencies: { a: '1' } })
   const deps = JSON.stringify({ name: 'app', scripts: { test: 'vitest run' }, dependencies: { a: '1', b: '^2.0.0' }, devDependencies: { c: '~3' } })
   test('dependency-only package.json: registry versions of packages that are not the runner or the toolchain', () => {
     expect(depsVerdict(before, deps)).toEqual({ ok: true, changed: ['b', 'c'] })
-    for (const [name, spec] of [['b', 'file:./tools/b'], ['b', 'npm:evil@1'], ['b', 'github:x/y'], ['b', 'https://x/y.tgz'], ['vitest', '^3.0.0'], ['@vitest/runner', '3'], ['typescript', '5']] as const) expect([name, spec, depsVerdict(before, JSON.stringify({ name: 'app', scripts: { test: 'vitest run' }, dependencies: { a: '1', [name]: spec } })).ok]).toEqual([name, spec, false])
+    for (const [name, spec] of [['b', 'file:./tools/b'], ['b', 'npm:evil@1'], ['b', 'github:x/y'], ['b', 'https://x/y.tgz'], ['vitest', '^3.0.0'], ['@vitest/runner', '3'], ['typescript', '5'], ['@types/node', '22']] as const) expect([name, spec, depsVerdict(before, JSON.stringify({ name: 'app', scripts: { test: 'vitest run' }, dependencies: { a: '1', [name]: spec } })).ok]).toEqual([name, spec, false])
     expect(depsVerdict(before, JSON.stringify({ name: 'app', scripts: { test: 'vitest run --passWithNoTests' }, dependencies: { a: '1' } })).ok).toBe(false)
     expect(depsVerdict(before, '{ broken').ok).toBe(false)
   })
@@ -71,5 +71,12 @@ describe('flow command sources', () => {
     expect(scriptOperands('package.json', '{ broken', ['test'])).toEqual([])
     expect(scriptNames([['npm', 'test'], ['npm', 'run', 'lint'], ['pnpm', 'run', 'typecheck'], ['yarn', 'test'], ['npx', 'tsc']])).toEqual(['test', 'lint', 'typecheck'])
     expect(argvOperands(['node', 'scripts/check.mjs', '--fix', './x.sh', 'src', '--config=vitest.ci.mts', '--import=./reg.mjs', 'scripts/check'])).toEqual(['scripts/check.mjs', 'x.sh', 'vitest.ci.mts', 'reg.mjs', 'scripts/check'])
+  })
+})
+
+describe('the TypeScript runner at a re-baseline (owner decision 2026-10-19)', () => {
+  test('a toolchain or assertion package whose files changed blocks; the same files, empty facts pass; facts that cannot be read block', () => {
+    const f = (tool: Record<string, string>) => JSON.stringify({ tool })
+    expect([nodeModulesRebaseBlock('', ''), nodeModulesRebaseBlock(f({ 'node_modules/vitest': 'a' }), f({ 'node_modules/vitest': 'a' })), nodeModulesRebaseBlock(f({ 'node_modules/vitest': 'a' }), f({ 'node_modules/vitest': 'b' })), nodeModulesRebaseBlock('{', f({}))]).toEqual([null, null, 'node_modules/vitest (toolchain)', 'node_modules'])
   })
 })

@@ -8,15 +8,19 @@ import { fill } from '../flow/data/templates'
 import type { Routing } from '../flow/data/types'
 import type { FlowSession } from '../types'
 import { flowTree, gitPaths } from './flow-git'
+import { keepTrees, neededTrees } from './flow-refs'
 import { attest, newNonce, sha256, spawnDecision, TREE_CHANGERS, type AgentRun, type SpawnOut } from './flow-review'
 import { activeView, dropView, mutateSession, session, type FlowHost } from './flow-host'
 import { updateRecord, type FlowRecord, type TicketKind, type TicketRecord, type UpdateResult } from './flow-state'
+import { stackOf } from './stacks/index'
 
 export type SpawnEvent = {
   tool_use_id: string; prompt: string; description?: string; subagentType: string; model?: string; fork?: boolean; isTeammate?: true
   name?: string; workflow?: unknown; parentAgentId?: string; isolation?: unknown; resume?: unknown; cwd?: string
 }
-export type Issue = { role: keyof Routing['agents']; f: string; kind?: TicketKind; typescriptShare?: number; build: (nonce: string) => string | null; also?: (r: FlowRecord) => FlowRecord }
+/** share: of the changed lines, the part in the stack's own files (its `ownsFile`), which routes the reviewer
+ * (routedAgent); another role goes to the stack's own agent for it whatever the share (R2 plan §4.4). */
+export type Issue = { role: keyof Routing['agents']; f: string; kind?: TicketKind; share?: number; build: (nonce: string) => string | null; also?: (r: FlowRecord) => FlowRecord }
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 const settled = (out: UpdateResult): FlowRecord => { dropView(); if (!out.ok) throw new Error(`flow: the record could not be written (${out.reason})`); return out.record }
@@ -32,16 +36,18 @@ const nextSeq = (r: FlowRecord, s: FlowSession): number =>
 export async function issueTicket(h: FlowHost, r: FlowRecord, i: Issue): Promise<string | null> {
   const nonce = newNonce(), text = i.build(nonce)
   if (text === null) return null
-  const sha = await sha256(text), tree = await flowTree(h.io, await gitPaths(h.io, r.root), 'worktree', newNonce())
+  const p = await gitPaths(h.io, r.root), sha = await sha256(text), tree = await flowTree(h.io, p, 'worktree', newNonce())
   let id = ''
-  const known = (await session(h)).value
-  settled(await updateRecord(h.io, h.home, r.flowId, h.sessionId, x => {
+  const known = (await session(h)).value, stackAgents = stackOf(r).data.routing
+  const written = settled(await updateRecord(h.io, h.home, r.flowId, h.sessionId, x => {
     const seq = nextSeq(x, known)
     id = `T-${seq}`
-    const t = { id, f: i.f, sha, nonce, tree, routedType: routedAgent(i.role, i.typescriptShare ?? 0), model: ROUTING.agents[i.role].model, used: false, ...(i.kind ? { kind: i.kind } : {}) }
+    const t = { id, f: i.f, sha, nonce, tree, routedType: routedAgent(i.role, i.share ?? 0, stackAgents), model: ROUTING.agents[i.role].model, used: false, ...(i.kind ? { kind: i.kind } : {}) }
     return (i.also ?? (y => y))({ ...x, ticketSeq: seq, tickets: [...x.tickets, t] })
   }))
-  await mutateSession(h, s => ({ ...s, tickets: { ...s.tickets, [id]: text } }))
+  // A1: a tree the write recorded (a feature's start or RED tree) is kept at once; the ticket's text is kept whatever
+  // that does (its error still goes up); a tree lost already is the next check's
+  try { await keepTrees(h.io, p, r.flowId, neededTrees(written)) } finally { await mutateSession(h, s => ({ ...s, tickets: { ...s.tickets, [id]: text } })) }
   return id
 }
 

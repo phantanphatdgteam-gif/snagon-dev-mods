@@ -1,8 +1,9 @@
 import { describe, expect, test } from 'claude-code/testing'
-import { TYPESCRIPT } from '../flow/data/stacks'
+import { TYPESCRIPT } from '../flow/data/stacks/typescript'
+import { authEnvNames, npmrcHasAuth, judgeEnv } from '../hooks/stacks/typescript-commands'
 import {
-  detectManagers, proposeBlock, postText, sandboxRefusals, effectiveOf, verifyAfterWrite, authEnvNames, npmrcHasAuth,
-  pluginRootRefusals, judgeProfile, judgeArgv, probeShowsSandbox, PROTECTED_DIRS, type Settings,
+  detectManagers, proposeBlock, postText, sandboxRefusals, effectiveOf, verifyAfterWrite,
+  pluginRootRefusals, judgeProfile, judgeProfileStrict, judgeArgv, probeShowsSandbox, PROTECTED_DIRS, JUDGE_MACH_SERVICES, type Settings,
 } from '../hooks/flow-sandbox'
 
 const HOME = '/Users/u'
@@ -150,7 +151,8 @@ describe('flow sandbox setup', () => {
     expect(profile).toContain('\n(deny mach-lookup) (allow mach-lookup (global-name "com.apple.audio.systemsoundserver")')
     expect(profile).not.toContain('launchservicesd')
     expect(profile).not.toContain('com.apple.lsd')
-    for (const rule of ['(deny lsopen)', '(deny job-creation)', '(deny mach-register)', '(deny signal) (allow signal (target same-sandbox))', '(deny file-ioctl) (allow file-ioctl (literal "/dev/null")', '(deny file-link)']) expect(profile).toContain(`\n${rule}`)
+    for (const rule of ['(deny lsopen)', '(deny job-creation)', '(deny mach-register)', '(deny signal) (allow signal (target same-sandbox))', '(deny file-ioctl) (allow file-ioctl (literal "/dev/null")']) expect(profile).toContain(`\n${rule}`)
+    expect(profile).toContain(`\n(deny file-link) (allow file-link (subpath "${ROOT}") (subpath "/private/var/folders/ab/T"))`)
     expect(profile).toContain('\n(deny file-read* file-write* (regex #"^/dev/(tty|pty|ptmx|ttys|cu\\.|console)"))')
     expect(profile).toContain('/\\.[vV][sS][cC][oO][dD][eE](/|$)')
     expect(profile.trimEnd().endsWith('(deny network*)')).toBe(true)
@@ -163,15 +165,54 @@ describe('flow sandbox setup', () => {
     expect(() => judgeProfile({ root: 'relative', tmpDir: '/t', commonDir: '/c', denyRead: [], loopbackPorts: [] })).toThrow()
   })
 
+  test('F28 trial: the strict profile denies by default, adds Claude Code\'s base, then the live judge\'s rules verbatim and last', () => {
+    const o = { root: ROOT, tmpDir: '/private/var/folders/ab/T', commonDir: `${ROOT}/.git`, denyRead: [`${HOME}/.ssh`, `${HOME}/.snagon/flow`], loopbackPorts: [5173] }
+    const live = judgeProfile(o), strict = judgeProfileStrict({ ...o, tag: 'flow-strict_7' })
+    const liveRules = live.slice('(version 1)\n(allow default)\n'.length)
+    expect(strict.startsWith('(version 1)\n(deny default (with message "flow-strict_7"))\n')).toBe(true)
+    expect(strict).not.toContain('(allow default)')
+    // the live rules last, as they are
+    expect(strict.endsWith(`\n(allow file-read*)\n${liveRules}`)).toBe(true)
+    // the base: sandbox-runtime's fixed part (processes, preferences, POSIX IPC, the listed mach, iokit and sysctl names)
+    const base = strict.slice(0, strict.length - liveRules.length - '(allow file-read*)\n'.length)
+    for (const rule of ['(allow process-exec)', '(allow process-fork)', '(allow user-preference-read)', '(allow ipc-posix-shm)', '(allow ipc-posix-sem)', '(allow iokit-get-properties)', '(allow sysctl-read', '(allow mach-lookup', '(allow distributed-notification-post)']) expect(base).toContain(`\n${rule}`)
+    // the base allows nothing the live judge refuses: a rule with a filter wins over a bare deny whatever the order (P6),
+    // so the judge's later (deny mach-lookup), (deny file-ioctl), (deny signal), (deny process-info*) close nothing the
+    // base names; its names stay within what the judge's own rules allow
+    for (const op of ['lsopen', 'appleevent-send', 'job-creation', 'mach-register', 'pseudo-tty', 'network', 'file-link', 'file-write*', 'file-read*', 'default']) expect(base).not.toContain(`(allow ${op}`)
+    const mach = [...base.matchAll(/\(global-name "([^"]+)"\)/g)].map(m => m[1] ?? '')
+    expect(mach.length > 0 && mach.every(n => JUDGE_MACH_SERVICES.includes(n))).toBe(true)
+    const ioctl = [...base.matchAll(/\(allow file-ioctl[^\n]*/g)].flatMap(m => [...m[0].matchAll(/\(literal "([^"]+)"\)/g)].map(x => x[1] ?? ''))
+    expect(ioctl.every(p => ['/dev/null', '/dev/zero', '/dev/random', '/dev/urandom', '/dev/dtracehelper'].includes(p))).toBe(true)
+    for (const name of ['/dev/tty', 'launchservicesd', 'com.apple.lsd', 'SecurityServer']) expect(base).not.toContain(name)
+    for (const op of ['signal', 'process-info*']) expect([...base.matchAll(new RegExp(`\\(allow ${op.replace('*', '\\*')}[^\\n]*`, 'g'))].every(m => m[0] === `(allow ${op} (target same-sandbox))`)).toBe(true)
+    for (const rule of ['(deny mach-lookup) (allow mach-lookup', '(deny file-ioctl) (allow file-ioctl', '(deny signal) (allow signal', '(deny process-info*) (allow process-info*', '(deny file-write*)']) expect(liveRules).toContain(rule)
+    expect(strict).toContain('(allow network-outbound (remote ip "localhost:5173"))')
+    // the tag ends every denial in the system log; it is quoted into the profile, so it stays one plain word
+    for (const tag of ['', 'a b', 'a"b', 'a\nb', 'a)b', 'x'.repeat(65)]) expect(() => judgeProfileStrict({ ...o, tag })).toThrow('tag')
+    expect(() => judgeProfileStrict({ ...o, root: 'relative', tag: 't' })).toThrow()
+  })
+
   test('the judge command starts from an empty environment and passes only the listed variables', () => {
-    const argv = judgeArgv('(version 1)', ['npx', 'vitest', 'run'], { PATH: '/usr/bin:/bin', HOME, TMPDIR: '/t', LANG: 'en_US.UTF-8', emptyConfig: '/mod/flow/empty.npmrc' })
+    const argv = judgeArgv('(version 1)', ['npx', 'vitest', 'run'], { PATH: '/usr/bin:/bin', HOME, TMPDIR: '/t', LANG: 'en_US.UTF-8', marker: 'run8', stack: judgeEnv({ pluginRoot: '/mod' }) })
     expect(argv.slice(0, 2)).toEqual(['/usr/bin/env', '-i'])
+    expect(argv).toContain('SNAGON_FLOW_RUN=run8')
     expect(argv).toContain('GIT_CONFIG_GLOBAL=/dev/null')
     expect(argv).toContain('npm_config_userconfig=/dev/null')
     expect(argv).toContain('npm_config_globalconfig=/mod/flow/empty.npmrc')
     expect(argv).toContain('CI=1')
     expect(argv.some(a => a.startsWith('TZ='))).toBe(false)
+    // the fixed lines in the order 0.5.4 sent them, the stack's (npm config) between CI and git's
+    expect(argv.slice(argv.indexOf('CI=1'), argv.indexOf('/usr/bin/sandbox-exec'))).toEqual(['CI=1', 'npm_config_userconfig=/dev/null', 'npm_config_globalconfig=/mod/flow/empty.npmrc', 'GIT_CONFIG_GLOBAL=/dev/null', 'GIT_CONFIG_NOSYSTEM=1', 'GIT_TERMINAL_PROMPT=0'])
     expect(argv.slice(-6)).toEqual(['/usr/bin/sandbox-exec', '-p', '(version 1)', 'npx', 'vitest', 'run'])
+  })
+
+  test('a stack line may not set a core variable again (the later one wins) or be malformed (R2 step-1 review)', () => {
+    const base = { PATH: '/usr/bin:/bin', HOME, TMPDIR: '/t' }
+    for (const line of ['PATH=/tmp/evil', 'HOME=/tmp', 'TMPDIR=/x', 'LANG=C', 'TZ=UTC', 'CI=0', 'SNAGON_FLOW_RUN=x', 'GIT_DIR=/x', 'GIT_CONFIG_GLOBAL=/x', 'not a line', '=x']) {
+      expect(() => judgeArgv('(version 1)', ['x'], { ...base, stack: [line] })).toThrow('the stack may not set')
+    }
+    expect(judgeArgv('(version 1)', ['x'], { ...base, stack: ['PYTHONSAFEPATH=1', 'npm_config_userconfig=/dev/null'] })).toContain('PYTHONSAFEPATH=1')
   })
 
   test('the sandbox counts as active only when the probe was refused by the sandbox', () => {

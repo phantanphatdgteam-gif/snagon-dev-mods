@@ -10,10 +10,15 @@ import { fileURLToPath } from 'node:url'
 registerHooks({ resolve(spec, ctx, next) { try { return next(spec, ctx) } catch (e) { if (spec.startsWith('.') && !spec.endsWith('.ts')) return next(`${spec}.ts`, ctx); throw e } } })
 const G = await import('../hooks/flow-git.ts')
 const J = await import('../hooks/flow-judge.ts')
-const Src = await import('../hooks/flow-sources.ts')
+const Src = await import('../hooks/stacks/typescript-sources.ts')
+const Tt = await import('../hooks/stacks/typescript-tests.ts')
+const Tc = await import('../hooks/stacks/typescript-commands.ts')
+const Tr = await import('../hooks/stacks/typescript-red.ts')
+const { TYPESCRIPT_STACK } = await import('../hooks/stacks/typescript.ts')
 const Sc = await import('../hooks/flow-scan.ts')
 const S = await import('../hooks/flow-sandbox.ts')
-const { TYPESCRIPT } = await import('../flow/data/stacks.ts')
+const { TYPESCRIPT } = await import('../flow/data/stacks/typescript.ts')
+const judgeEnv = Tc.judgeEnv({ pluginRoot: join(dirname(fileURLToPath(import.meta.url)), '..') })
 const Pa = await import('../flow/parse.ts')
 
 const base = realpathSync(mkdtempSync(join(tmpdir(), 'flow-judge-check-')))
@@ -37,9 +42,9 @@ try {
   sh(A, 'add', '-A'); sh(A, 'commit', '-q', '-m', 'start')
   const P = await G.gitPaths(io, A), start = sh(A, 'rev-parse', 'HEAD^{tree}')
   check('an export missing from a module at the start tree is absent; one it has is present; a new module is absent',
-    (await J.symbolAbsent(io, P, start, 'src/add', 'sub')) && !(await J.symbolAbsent(io, P, start, 'src/add', 'add')) && (await J.symbolAbsent(io, P, start, 'src/mul', 'mul')))
+    (await J.symbolAbsent(io, P, start, Src.moduleFiles('src/add'), 'sub')) && !(await J.symbolAbsent(io, P, start, Src.moduleFiles('src/add'), 'add')) && (await J.symbolAbsent(io, P, start, Src.moduleFiles('src/mul'), 'mul')))
   put(join(A, 'tests/a.test.ts'), "it('AC-001 adds', () => {})\nit('AC-003 x', () => {})\n"); sh(A, 'add', 'tests/a.test.ts'); put(join(A, 'tests/b.spec.ts'), "it('AC-002 subtracts', () => {})\n"); put(join(A, 'src/c.ts'), '// AC-009 is not a test\n')
-  const ids = await J.evalIdsInTests(io, P, TYPESCRIPT.testFiles)
+  const ids = await Tt.evalIdsInTests(io, P, TYPESCRIPT.testFiles)
   check('eval ids are found in tracked and untracked test files only', JSON.stringify([...ids].sort()) === JSON.stringify([['AC-001', ['tests/a.test.ts']], ['AC-002', ['tests/b.spec.ts']], ['AC-003', ['tests/a.test.ts']]]), JSON.stringify([...ids]))
   const src0 = (await Src.commandSources(io, P)).hashes
   check('command sources include tracked configs and an ignored .npmrc, not source files', ['package.json', 'tsconfig.json', '.npmrc', 'vitest.config.ts', '.gitignore'].every(k => k === '.gitignore' ? !(k in src0) : k in src0) && !('src/add.ts' in src0), Object.keys(src0).join(','))
@@ -84,7 +89,7 @@ try {
   put(join(C, 'tests/w.test.ts'), before); sh(C, 'add', '-A'); sh(C, 'commit', '-q', '-m', 'w')
   put(join(C, 'tests/w.test.ts'), before.replace('    const d = 4\n', '    const d = 4\n    if (!ready) {\n      return\n    }\n').replace('      expect(v).toBe(1)\n', '      expect(v).toBe(1)\n      expect(v).not.toBe(2)\n'))
   const wd = await G.git(io, C, [...Sc.SCAN_DIFF_ARGS])
-  const ws = Sc.scan(wd.stdout, [], { stack: TYPESCRIPT, frozen: [] })
+  const ws = Sc.scan(wd.stdout, [], { stack: TYPESCRIPT_STACK, frozen: [] })
   check('a real git diff with SCAN_DIFF_ARGS shows the whole test: a guard deep in a test inside describe is HIGH; a promise-returning test is not flagged', JSON.stringify(ws.findings.map(f => `${f.rule}:${f.sev}`)) === JSON.stringify(['conditional-return:HIGH']), JSON.stringify(ws.findings))
   // RED in an existing test file: its imports sit far above the hunks, so the RED rules read the file's full text.
   const cartTop = "import { describe, it, expect } from 'vitest'\nimport { pricing } from '../src/pricing'\nimport { total } from '../src/cart'\n\ndescribe('old', () => {\n  it('keeps', () => {\n    expect(1).toBe(1)\n  })\n})\n"
@@ -92,14 +97,14 @@ try {
   const redBlock = "\ndescribe('AC-004 cart', () => {\n  it('AC-004 totals', () => {\n    expect(total()).toBe(3)\n  })\n})\n"
   put(join(C, 'tests/cart.test.ts'), cartTop + redBlock)
   const redDiff = (await G.git(io, C, [...Sc.SCAN_DIFF_ARGS])).stdout
-  const shape = Sc.redShape(Sc.parseDiff(redDiff), ['tests/cart.test.ts'])
+  const shape = Tr.redShape(Sc.parseDiff(redDiff), ['tests/cart.test.ts'])
   const green = cartTop + redBlock + "\nit('AC-004 more', () => {\n  pricing.discount = () => 0.1\n  expect(total()).toBe(3)\n})\n"
   put(join(C, 'tests/cart.test.ts'), green)
   const greenDiff = (await G.git(io, C, [...Sc.SCAN_DIFF_ARGS])).stdout
-  const withText = Sc.scan(greenDiff, [], { stack: TYPESCRIPT, frozen: [], red: shape, texts: { 'tests/cart.test.ts': green } }).findings.filter(f => f.rule === 'mock-after-red')
+  const withText = Sc.scan(greenDiff, [], { stack: TYPESCRIPT_STACK, frozen: [], red: shape, texts: { 'tests/cart.test.ts': green } }).findings.filter(f => f.rule === 'mock-after-red')
   check('in an existing test file, a patch of an import added after RED is found through the file\'s full text (the import is out of the diff)', !redDiff.includes("from '../src/pricing'") && withText.length === 1 && withText[0]?.sev === 'HIGH', JSON.stringify(withText))
   put(join(A, 'tests/c.test.ts'), "it.each([['a', 1]])('AC-004 rows %s', () => {})\ntest.each`\n  a\n  ${1}\n`('AC-006 table $a', () => {})\nit.skip('AC-005 skipped', () => {})\ntest.failing('AC-008 failing', () => {})\nit .failing('AC-012 spaced', () => {})\n// it('AC-007 comment')\n")
-  const ids2 = await J.evalIdsInTests(io, P, TYPESCRIPT.testFiles)
+  const ids2 = await Tt.evalIdsInTests(io, P, TYPESCRIPT.testFiles)
   check('eval ids in table tests count; a skipped test or a comment does not', ids2.has('AC-004') && ids2.has('AC-006') && !ids2.has('AC-005') && !ids2.has('AC-007') && !ids2.has('AC-008') && !ids2.has('AC-012'), JSON.stringify([...ids2]))
   const { symlinkSync, unlinkSync } = await import('node:fs')
   put(join(A, 'node_modules/vitest/package.json'), '{"name":"vitest","dependencies":{"tinypool":"1"}}'); put(join(A, 'node_modules/vitest/index.js'), 'run()\n')
@@ -136,22 +141,22 @@ try {
   if (project && existsSync(join(project, 'node_modules/.bin/vitest')) && process.platform === 'darwin') {
     const root = realpathSync(project), tmp = realpathSync(process.env.TMPDIR || '/tmp')
     const profile = S.judgeProfile({ root, tmpDir: tmp, commonDir: join(root, '.git'), denyRead: [join(homedir(), '.ssh')], loopbackPorts: [] })
-    const argv = S.judgeArgv(profile, ['npx', 'vitest', 'run'], { PATH: process.env.PATH, HOME: homedir(), TMPDIR: tmp, emptyConfig: join(dirname(fileURLToPath(import.meta.url)), '../flow/empty.npmrc') })
+    const argv = S.judgeArgv(profile, ['npx', 'vitest', 'run'], { PATH: process.env.PATH, HOME: homedir(), TMPDIR: tmp, stack: judgeEnv })
     const ran = await J.runJudged(io, argv, root, J.timeoutFor(30_000))
     check('a real vitest run in the judge sandbox comes back with readable failures', ran.ok && (J.judgeRun({ id: 'test', runner: 'vitest', mode: 'no-new-failures' }, ran.run, null, TYPESCRIPT, [], new Map()).newFailures.length > 0 || ran.run.exitCode === 0), JSON.stringify(ran).slice(0, 300))
     const v = J.judgeRun({ id: 'test', runner: 'vitest', mode: 'no-new-failures' }, ran.run, null, TYPESCRIPT, [], new Map())
     const again = await J.runJudged(io, argv, root, J.timeoutFor(30_000))
     check('the same run judged against itself as baseline passes (nothing new fails)', again.ok && J.judgeRun({ id: 'test', runner: 'vitest', mode: 'no-new-failures' }, again.run, { signatures: v.newFailures, counts: v.counts, exitCode: ran.run.exitCode }, TYPESCRIPT, [], new Map()).pass)
     const runDir = mkdtempSync(join(tmp, 'flow-run-'))
-    const judged = J.judgedArgv(['npx', 'vitest', 'run'], 'vitest', runDir), reportFile = judged.reportFile ?? ''
-    const withReport = S.judgeArgv(profile, judged.argv, { PATH: process.env.PATH, HOME: homedir(), TMPDIR: tmp, emptyConfig: join(dirname(fileURLToPath(import.meta.url)), '../flow/empty.npmrc') })
+    const judged = Tc.judgedArgv(['npx', 'vitest', 'run'], 'vitest', runDir), reportFile = judged.reportFile ?? ''
+    const withReport = S.judgeArgv(profile, judged.argv, { PATH: process.env.PATH, HOME: homedir(), TMPDIR: tmp, stack: judgeEnv })
     const ranR = await J.runJudged(io, withReport, root, J.timeoutFor(30_000))
     const report = existsSync(reportFile) ? Pa.readReport(readFileSync(reportFile, 'utf8'), root) : null
     rmSync(runDir, { recursive: true, force: true })
     const vr = ranR.ok ? J.judgeRun({ id: 'test', runner: 'vitest', mode: 'no-new-failures' }, ranR.run, null, TYPESCRIPT, ['AC-001', 'AC-002', 'AC-004'], new Map(), report) : null
     check('a judged vitest run writes its JSON report in the run folder; console and report agree; AC-001 passed, AC-002 failed, AC-004 skipped', Boolean(report) && vr?.note !== 'the report and the console disagree' && JSON.stringify(vr?.evalProblems) === JSON.stringify(['AC-002 failed', 'AC-004 not run']), JSON.stringify(vr))
-    const tscArgv = S.judgeArgv(profile, J.judgedArgv(['npx', 'tsc', '--noEmit'], 'tsc', runDir).argv, { PATH: process.env.PATH, HOME: homedir(), TMPDIR: tmp, emptyConfig: join(dirname(fileURLToPath(import.meta.url)), '../flow/empty.npmrc') })
-    const plainTsc = S.judgeArgv(profile, ['npx', 'tsc', '--noEmit'], { PATH: process.env.PATH, HOME: homedir(), TMPDIR: tmp, emptyConfig: join(dirname(fileURLToPath(import.meta.url)), '../flow/empty.npmrc') })
+    const tscArgv = S.judgeArgv(profile, Tc.judgedArgv(['npx', 'tsc', '--noEmit'], 'tsc', runDir).argv, { PATH: process.env.PATH, HOME: homedir(), TMPDIR: tmp, stack: judgeEnv })
+    const plainTsc = S.judgeArgv(profile, ['npx', 'tsc', '--noEmit'], { PATH: process.env.PATH, HOME: homedir(), TMPDIR: tmp, stack: judgeEnv })
     const [t1, t2] = [await J.runJudged(io, tscArgv, root, J.timeoutFor(30_000)), await J.runJudged(io, plainTsc, root, J.timeoutFor(30_000))]
     check('tsc with the cache flags gives the same result as tsc as approved', t1.ok && t2.ok && t1.run.exitCode === t2.run.exitCode && t1.run.output === t2.run.output, JSON.stringify([t1, t2]).slice(0, 300))
   } else console.log('skip: set FLOW_JUDGE_PROJECT to a TypeScript project with vitest for the live judge run')

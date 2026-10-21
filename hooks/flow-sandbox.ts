@@ -3,6 +3,8 @@
 // (the merged `sandbox` object plus the permission rules that widen it), and the judge's sandbox-exec profile and argv.
 // Pure functions: the caller reads settings, files and the environment.
 import type { Stack } from '../flow/data/types'
+import { COMMON_DENY_READ } from '../flow/data/common'
+import { RUN_MARKER_VAR } from './flow-reap'
 
 export type Layer = 'user' | 'project' | 'local' | 'flag' | 'policy'
 export type Settings = Record<string, unknown>
@@ -18,7 +20,7 @@ export type Effective = { sandbox: unknown; webFetchDomains: string[]; editAllow
 /** Paths under the root the judge may never write and the Edit tools may never touch (plan §2.3 PS, under the root). */
 export const PROTECTED_DIRS = ['.git', '.claude', '.vscode', '.idea', '.snagon', '.husky', '.cargo', '.devcontainer', '.yarn', '.mvn', '.config/git']
 export const PROTECTED_FILES = ['.mcp.json', '.gitconfig', '.gitmodules', '.bashrc', '.bash_profile', '.zshrc', '.zprofile', '.profile', '.ripgreprc', 'docs/flow/verify.md']
-/** Hidden from Bash and the judge besides the stack's credential files. */
+/** Hidden from Bash and the judge besides the credential files (the stack's and COMMON_DENY_READ). */
 export const FLOW_DENY_READ = ['~/.claude/projects', '~/.snagon/flow']
 /** FLOW_DENY_READ with the transcripts where CLAUDE_CONFIG_DIR puts them (F41). */
 export const flowDenyRead = (home: string, claudeDir: string): string[] =>
@@ -45,18 +47,29 @@ const normalize = (p: string): string => { const out: string[] = []; for (const 
 const EDIT_RULE = /^(Edit|Write|MultiEdit|NotebookEdit)(?:\((.*)\))?$/
 const hasGlob = (p: string): boolean => /[*?[{]/.test(p)
 
-/** Lockfile managers found among the root's file names; a bare package.json means npm. */
+/** Whether a root file name matches one of a stack's names: the same, or with `*` standing for any characters
+ * (`requirements*.txt`). */
+export const nameMatches = (pattern: string, name: string): boolean =>
+  pattern.includes('*') ? new RegExp(`^${pattern.split('*').map(p => p.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('.*')}$`).test(name) : pattern === name
+
+/** Lockfile managers found among the root's file names; a bare manifest means the stack's first manager (npm for
+ * package.json). */
 export function detectManagers(stack: Stack, rootFiles: readonly string[]): string[] {
-  const found = stack.packageManagers.filter(m => m.lockfiles.some(f => rootFiles.includes(f))).map(m => m.id)
-  return found.length || !rootFiles.includes('package.json') ? found : ['npm']
+  const found = stack.packageManagers.filter(m => m.lockfiles.some(f => rootFiles.some(n => nameMatches(f, n)))).map(m => m.id)
+  const first = stack.packageManagers[0]?.id
+  return found.length || !first || !rootFiles.includes(stack.manifest) ? found : [first]
 }
+
+/** What Bash and the judge may not read: the stack's credential files, COMMON_DENY_READ, flow's own, in this order (the
+ * bytes 0.5.4 froze). The proposed block and the judge's fallback when the frozen sandbox lists none both use it. */
+export const stackDenyRead = (stack: Stack, flowDeny: readonly string[] = FLOW_DENY_READ): string[] => unique([...stack.sandbox.denyRead, ...COMMON_DENY_READ, ...flowDeny])
 
 export function proposeBlock(stack: Stack, managers: readonly string[], flowDeny: readonly string[] = FLOW_DENY_READ): SandboxBlock {
   const used = stack.packageManagers.filter(m => managers.includes(m.id))
   return {
     enabled: true, allowUnsandboxedCommands: false,
     network: { allowedDomains: unique(used.flatMap(m => m.domains)).sort() },
-    filesystem: { allowWrite: unique(used.flatMap(m => m.cacheDirs)), denyRead: unique([...stack.sandbox.denyRead, ...flowDeny]) },
+    filesystem: { allowWrite: unique(used.flatMap(m => m.cacheDirs)), denyRead: stackDenyRead(stack, flowDeny) },
   }
 }
 
@@ -182,14 +195,6 @@ export function verifyAfterWrite(o: { local: unknown; merged: Settings; approved
   return out
 }
 
-/** Registry credentials in the environment, by name (values are never read): the stack's list and npm_config auth keys. */
-export const authEnvNames = (names: readonly string[], stack: Stack): string[] =>
-  names.filter(n => stack.registryAuthEnv.includes(n) || /^npm_config_.*_auth/i.test(n))
-
-/** Whether a project .npmrc or .yarnrc.yml holds a registry credential (comment lines aside). */
-export const npmrcHasAuth = (text: string): boolean =>
-  text.split('\n').some(l => !/^\s*[#;]/.test(l) && /(^|[^\w])(_auth|_authToken|npmAuthToken)\s*[=:]/.test(l))
-
 /** Loaded plugin roots (realpaths) the agent could write: inside the project, a writable path or a temp folder. */
 export function pluginRootRefusals(roots: readonly string[], ctx: { root: string; allowWrite: readonly string[]; tempDirs: readonly string[] }): Array<{ root: string }> {
   const under = (p: string, d: string): boolean => fold(p) === fold(d) || fold(p).startsWith(`${fold(d)}/`)
@@ -212,26 +217,34 @@ export const JUDGE_MACH_SERVICES = [
   'com.apple.logd', 'com.apple.PowerManagement.control', 'com.apple.system.logger', 'com.apple.system.notification_center',
   'com.apple.system.opendirectoryd.libinfo', 'com.apple.system.opendirectoryd.membership', 'com.apple.bsd.dirhelper', 'com.apple.securityd.xpc',
 ]
+/** The devices every judged run may write and ioctl. */
+const DEVICES = ['/dev/null', '/dev/zero', '/dev/random', '/dev/urandom', '/dev/dtracehelper']
+type JudgeOptions = { root: string; tmpDir: string; commonDir: string; denyRead: readonly string[]; loopbackPorts: readonly number[] }
 /**
  * The judge's sandbox-exec profile (paths are realpaths). It runs code the agent wrote, outside Claude Code's sandbox,
  * so every channel to other processes is closed: mach lookups beyond a base list, LaunchServices and Apple Events, job
  * creation, terminals (a TIOCSTI ioctl could type into the owner's session), signals and process info outside it.
  * A test-runner port opens loopback only (F4).
  */
-export function judgeProfile(o: { root: string; tmpDir: string; commonDir: string; denyRead: readonly string[]; loopbackPorts: readonly number[] }): string {
+export function judgeProfile(o: JudgeOptions): string {
+  return `${['(version 1)', '(allow default)', ...judgeRules(o)].join('\n')}\n`
+}
+/** The judge's own rules, after the profile's default line: the live profile and the strict trial share them. */
+function judgeRules(o: JudgeOptions): string[] {
   const sub = (p: string): string => `(subpath ${sbString(p)})`
   const lit = (p: string): string => `(literal ${sbString(p)})`
-  const devices = ['/dev/null', '/dev/zero', '/dev/random', '/dev/urandom', '/dev/dtracehelper'].map(lit).join(' ')
+  const devices = DEVICES.map(lit).join(' ')
   const ports = o.loopbackPorts.filter(p => Number.isInteger(p) && p > 0 && p < 65536)
-  const lines = [
-    '(version 1)', '(allow default)', '(deny file-write*)',
+  return [
+    '(deny file-write*)',
     `(allow file-write* ${sub(o.root)} ${sub(o.tmpDir)} ${devices})`,
     `(deny file-write* ${[sub(o.commonDir), ...PROTECTED_DIRS.map(d => sub(`${o.root}/${d}`)), ...PROTECTED_FILES.map(f => lit(`${o.root}/${f}`))].join(' ')})`,
     `(deny file-write* ${[...PROTECTED_DIRS, ...PROTECTED_FILES].map(n => anyCase(o.root, n)).join(' ')})`,
     ...(o.denyRead.length ? [`(deny file-read* ${o.denyRead.map(sub).join(' ')})`] : []),
     '(deny file-read* file-write* (regex #"^/dev/(tty|pty|ptmx|ttys|cu\\.|console)"))',
-    // no hard links at all: macOS already refuses one to a file the run may not write; this closes the rest (NK-03)
-    '(deny file-link)',
+    // links allowed only within the tree and the run folder (the project's own os.link, e.g. 535 ingest); macOS already
+    // refuses a link to a file the run may not write, so protected paths stay unreachable (NK-03, Q-3a step 7)
+    `(deny file-link) (allow file-link ${sub(o.root)} ${sub(o.tmpDir)})`,
     `(deny file-ioctl) (allow file-ioctl ${devices})`,
     `(deny mach-lookup) (allow mach-lookup ${JUDGE_MACH_SERVICES.map(n => `(global-name "${n}")`).join(' ')})`,
     '(deny mach-register)', '(deny lsopen)', '(deny appleevent-send)', '(deny job-creation)',
@@ -240,16 +253,69 @@ export function judgeProfile(o: { root: string; tmpDir: string; commonDir: strin
     '(deny network*)',
     ...ports.flatMap(p => [`(allow network-outbound (remote ip "localhost:${p}"))`, `(allow network-bind network-inbound (local ip "localhost:${p}"))`]),
   ]
-  return `${lines.join('\n')}\n`
 }
 
+/** Where the strict trial's base comes from (spike P6, run at step 11): Claude Code's sandbox runtime, the fixed rules
+ * of its macOS profile with no option on (no weaker network isolation, no Apple Events, no extra mach names, no pty). */
+export const STRICT_BASE_SOURCE = '@anthropic-ai/sandbox-runtime 0.0.80 (npm, Apache-2.0), dist/sandbox/macos-sandbox-utils.js generateSandboxProfile'
+const STRICT_SYSCTLS = [
+  'hw.activecpu', 'hw.busfrequency_compat', 'hw.byteorder', 'hw.cacheconfig', 'hw.cachelinesize_compat', 'hw.cpufamily', 'hw.cpufrequency', 'hw.cpufrequency_compat',
+  'hw.cputype', 'hw.l1dcachesize_compat', 'hw.l1icachesize_compat', 'hw.l2cachesize_compat', 'hw.l3cachesize_compat', 'hw.logicalcpu', 'hw.logicalcpu_max', 'hw.machine',
+  'hw.memsize', 'hw.ncpu', 'hw.nperflevels', 'hw.packages', 'hw.pagesize_compat', 'hw.pagesize', 'hw.physicalcpu', 'hw.physicalcpu_max', 'hw.tbfrequency_compat',
+  'hw.vectorunit', 'kern.argmax', 'kern.bootargs', 'kern.hostname', 'kern.maxfiles', 'kern.maxfilesperproc', 'kern.maxproc', 'kern.ngroups', 'kern.osproductversion',
+  'kern.osrelease', 'kern.ostype', 'kern.osvariant_status', 'kern.osversion', 'kern.secure_kernel', 'kern.tcsm_available', 'kern.tcsm_enable', 'kern.usrstack64',
+  'kern.version', 'kern.willshutdown', 'machdep.cpu.brand_string', 'machdep.ptrauth_enabled', 'security.mac.lockdown_mode_state', 'sysctl.proc_cputype', 'vm.loadavg',
+]
+const STRICT_SYSCTL_PREFIXES = ['hw.optional.arm', 'hw.optional.arm.', 'hw.optional.armv8_', 'hw.perflevel', 'kern.proc.all', 'kern.proc.pgrp.', 'kern.proc.pid.', 'machdep.cpu.', 'net.routetable.']
 /**
- * The judge's command line: an empty environment with only these variables, then sandbox-exec (plan §5.1). npm refuses
- * one file as both user and global config, so the global one is an empty file the mod ships (`emptyConfig`).
+ * The base as published (STRICT_BASE_SOURCE), one rule per line, without what the live judge closes: the LaunchServices
+ * names (com.apple.lsd.mapdb, com.apple.coreservices.launchservicesd; its mach list is otherwise JUDGE_MACH_SERVICES),
+ * com.apple.SecurityServer and the /dev/tty ioctl. For one operation Seatbelt lets a rule with a filter win over a rule
+ * without one, whatever their order (spike P6, step 11), so the judge's bare `(deny mach-lookup)` and `(deny file-ioctl)`
+ * after the base could not close them.
  */
-export function judgeArgv(profile: string, argv: readonly string[], env: { PATH: string; HOME: string; TMPDIR: string; LANG?: string; TZ?: string; emptyConfig: string }): string[] {
-  const vars = [`PATH=${env.PATH}`, `HOME=${env.HOME}`, `TMPDIR=${env.TMPDIR}`, ...(env.LANG ? [`LANG=${env.LANG}`] : []), ...(env.TZ ? [`TZ=${env.TZ}`] : [])]
-  const fixed = ['CI=1', 'npm_config_userconfig=/dev/null', `npm_config_globalconfig=${env.emptyConfig}`, 'GIT_CONFIG_GLOBAL=/dev/null', 'GIT_CONFIG_NOSYSTEM=1', 'GIT_TERMINAL_PROMPT=0']
+const STRICT_BASE = [
+  '(allow process-exec)', '(allow process-fork)', '(allow process-info* (target same-sandbox))', '(allow signal (target same-sandbox))', '(allow mach-priv-task-port (target same-sandbox))',
+  '(allow user-preference-read)',
+  `(allow mach-lookup ${JUDGE_MACH_SERVICES.map(n => `(global-name "${n}")`).join(' ')})`,
+  '(allow ipc-posix-shm)', '(allow ipc-posix-sem)',
+  '(allow iokit-open (iokit-registry-entry-class "IOSurfaceRootUserClient") (iokit-registry-entry-class "RootDomainUserClient") (iokit-user-client-class "IOSurfaceSendRight"))',
+  '(allow iokit-get-properties)',
+  '(allow system-socket (require-all (socket-domain AF_SYSTEM) (socket-protocol 2)))',
+  `(allow sysctl-read ${[...STRICT_SYSCTLS.map(n => `(sysctl-name "${n}")`), ...STRICT_SYSCTL_PREFIXES.map(n => `(sysctl-name-prefix "${n}")`)].join(' ')})`,
+  '(allow sysctl-write (sysctl-name "kern.tcsm_enable"))',
+  '(allow distributed-notification-post)',
+  ...DEVICES.map(d => `(allow file-ioctl (literal "${d}"))`),
+  '(allow file-ioctl file-read-data file-write-data (require-all (literal "/dev/null") (vnode-type CHARACTER-DEVICE)))',
+]
+/**
+ * F28 trial (R2 plan §4.6), inactive: flow never uses it in R2. The judge's profile built the strict way, like Claude
+ * Code's own: `(deny default)`, the sandbox runtime's fixed rules, its read rule for a deny list (`(allow file-read*)`, the
+ * judge's denyRead after it), then the live judge's rules as they are, so nothing the live judge refuses is allowed.
+ * Only `(deny default)` carries `tag`, so the denials the system log holds under it are what the strict way takes away
+ * beyond the live judge (tests/judge-strict.check.mjs lists them for AC-F28-1).
+ */
+// ASSUMPTION(GAP-R2-0.6-102): the base without the channels the live judge closes, then the live rules; the runtime's
+// directory metadata allow and move blocking stay out (they serve its allowWithinDeny; the judge writes only in the root
+// and the run folder).
+export function judgeProfileStrict(o: JudgeOptions & { tag: string }): string {
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(o.tag)) throw new Error(`judge profile: the tag must be 1 to 64 letters, digits, - or _ (got ${JSON.stringify(o.tag.slice(0, 80))})`)
+  return `${['(version 1)', `(deny default (with message "${o.tag}"))`, ...STRICT_BASE, '(allow file-read*)', ...judgeRules(o)].join('\n')}\n`
+}
+
+/** The variables the core sets in the judge: a stack's line may not set one again (with `env -i` the later one wins, so
+ * a stack could replace the PATH frozen at S2). A stack line is `NAME=value`. */
+const CORE_ENV = new RegExp(`^(?:PATH|HOME|TMPDIR|LANG|TZ|CI|${RUN_MARKER_VAR}|GIT_[A-Za-z0-9_]*)=`)
+/**
+ * The judge's command line: an empty environment with only these variables, then sandbox-exec (plan §5.1). `stack`:
+ * the lines the stack's tools need (its code's judgeEnv: for TypeScript, no user or global npm config). Throws on a
+ * stack line that is malformed or sets a core variable; judgedRun turns that into couldNotRun.
+ */
+export function judgeArgv(profile: string, argv: readonly string[], env: { PATH: string; HOME: string; TMPDIR: string; LANG?: string; TZ?: string; marker?: string; stack: readonly string[] }): string[] {
+  const bad = env.stack.find(l => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(l) || CORE_ENV.test(l))
+  if (bad !== undefined) throw new Error(`judge environment: the stack may not set "${bad.split('=')[0]?.slice(0, 40) ?? ''}"`)
+  const vars = [`PATH=${env.PATH}`, `HOME=${env.HOME}`, `TMPDIR=${env.TMPDIR}`, ...(env.LANG ? [`LANG=${env.LANG}`] : []), ...(env.TZ ? [`TZ=${env.TZ}`] : []), ...(env.marker ? [`${RUN_MARKER_VAR}=${env.marker}`] : [])]
+  const fixed = ['CI=1', ...env.stack, 'GIT_CONFIG_GLOBAL=/dev/null', 'GIT_CONFIG_NOSYSTEM=1', 'GIT_TERMINAL_PROMPT=0']
   return ['/usr/bin/env', '-i', ...vars, ...fixed, '/usr/bin/sandbox-exec', '-p', profile, ...argv]
 }
 

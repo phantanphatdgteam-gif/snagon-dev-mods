@@ -1,7 +1,9 @@
 // The vendored agent-skills methods as tickets quote them (plan v7.1 §8): the pure parts. The files on disk, their hashes
 // and the headings §8.1 cites are checked by `node tests/vendor.check.mjs` (claude plugin test reads no real files).
 import { describe, expect, test } from 'claude-code/testing'
-import { RED_TESTING, ROUTING } from '../flow/data/routing'
+import { ROUTING } from '../flow/data/routing'
+import { PYTHON } from '../flow/data/stacks/python'
+import { TYPESCRIPT } from '../flow/data/stacks/typescript'
 import type { Role } from '../flow/data/types'
 import { methodSection, methodText, sectionsOf, OVERRIDES, VENDOR_DIR, VENDOR_LOCK } from '../hooks/flow-method'
 import { authorTicketText, debugTicketText, planTicketText, redTicketText, reviewTicketText } from '../hooks/flow-review'
@@ -49,15 +51,37 @@ describe('vendored methods (plan §8)', () => {
       expect(text).toContain(`METHOD ${skill}`)
       expect(text.endsWith(OVERRIDES_TEXT.trim())).toBe(true)
     }
-    const red = await methodText(host.io, 'red')
+    const red = await methodText(host.io, 'red', TYPESCRIPT.redTesting)
     expect(red).toBe([HEAD, '## Test Structure (Arrange-Act-Assert)\nSTRUCTURE', '## Test Naming Conventions\nNAMING', '### Mock at Boundaries Only\nBOUNDARIES', '## Test Anti-Patterns\nANTI', OVERRIDES_TEXT.trim()].join('\n\n'))
     expect(red).not.toContain('NOT SENT')
   })
 
-  test('B1 testing text is the testing-patterns sections §8.1 cites (the routing fallback of §8)', () => {
+  test('B1 testing text is the flow stack\'s: the testing-patterns sections §8.1 cites for TypeScript, the pytest and fixtures sections of python-testing for Python (R2 plan §4.4)', () => {
     expect(ROUTING.skills.red).toEqual([])
-    expect(RED_TESTING).toEqual({ reference: 'testing-patterns', sections: ['Test Structure', 'Test Naming', 'Mock at Boundaries Only', 'Test Anti-Patterns'] })
-    expect(ROUTING.references.red).toContain(RED_TESTING.reference)
+    expect(TYPESCRIPT.redTesting).toEqual({ from: 'reference', name: 'testing-patterns', sections: ['Test Structure', 'Test Naming', 'Mock at Boundaries Only', 'Test Anti-Patterns'] })
+    expect(ROUTING.references.red).toContain(TYPESCRIPT.redTesting.name)
+    expect(PYTHON.redTesting).toEqual({ from: 'skill', name: 'python-testing', sections: ['pytest Fundamentals', 'Fixtures'] })
+  })
+
+  test('methodText: a RED ticket quotes the sections of one of the mod\'s own skills under that skill\'s heading, then the overrides; without the stack\'s testing text it fails loudly', async () => {
+    const skill = `${MOD_ROOT}/skills/python-testing/SKILL.md`
+    const { host } = fakeHost({ files: { [skill]: ['---', 'name: python-testing', '---', '# Python Testing Patterns', '## Core Testing Philosophy', 'NOT SENT', '## pytest Fundamentals', '### Basic Test Structure', '```python', '# Step 1: not a heading', '```', 'FUNDAMENTALS', '## Fixtures', 'FIXTURES', '## Parametrization', 'NOT SENT EITHER', ''].join('\n') } })
+    const red = await methodText(host.io, 'red', PYTHON.redTesting)
+    expect(red).toBe(['## Reference method (python-testing, MIT)', '## pytest Fundamentals\n### Basic Test Structure\n```python\n# Step 1: not a heading\n```\nFUNDAMENTALS', '## Fixtures\nFIXTURES', OVERRIDES_TEXT.trim()].join('\n\n'))
+    expect(red).not.toContain('NOT SENT')
+    expect(red).not.toContain('agent-skills')
+    await expect(methodText(fakeHost().host.io, 'red', PYTHON.redTesting)).rejects.toThrow('skills/python-testing/SKILL.md')
+    await expect(methodText(host.io, 'red')).rejects.toThrow('testing text')
+    // the other roles take no testing text, whatever the stack
+    expect(await methodText(host.io, 'debugger', PYTHON.redTesting)).toBe(await methodText(host.io, 'debugger'))
+  })
+
+  test('a cited heading the stack\'s testing text lacks fails loudly and names the file (step-8 code review)', async () => {
+    const py = fakeHost({ files: { [`${MOD_ROOT}/skills/python-testing/SKILL.md`]: '## pytest Fundamentals\nFUNDAMENTALS\n' } })
+    await expect(methodText(py.host.io, 'red', PYTHON.redTesting)).rejects.toThrow('skills/python-testing/SKILL.md has no section "Fixtures"')
+    const ts = fakeHost(), ref = `${MOD_ROOT}/${VENDOR_DIR}/references/testing-patterns.md`
+    ts.files.set(ref, (ts.files.get(ref) ?? '').replace('## Test Anti-Patterns', '## Something Else'))
+    await expect(methodText(ts.host.io, 'red', TYPESCRIPT.redTesting)).rejects.toThrow(`${VENDOR_DIR}/references/testing-patterns.md has no section "Test Anti-Patterns"`)
   })
 
   test('a vendored file that cannot be read, or a lock without a commit sha, fails loudly and names the file', async () => {
@@ -68,7 +92,7 @@ describe('vendored methods (plan §8)', () => {
     }
     const red = fakeHost()
     red.files.delete(`${MOD_ROOT}/${VENDOR_DIR}/references/testing-patterns.md`)
-    await expect(methodText(red.host.io, 'red')).rejects.toThrow('references/testing-patterns.md')
+    await expect(methodText(red.host.io, 'red', TYPESCRIPT.redTesting)).rejects.toThrow('references/testing-patterns.md')
     for (const lock of ['{"sha":"main"}', '[]', 'not json']) {
       const w = fakeHost({ files: { [`${MOD_ROOT}/${VENDOR_LOCK}`]: lock } })
       await expect(methodText(w.host.io, 'planner')).rejects.toThrow(VENDOR_LOCK)
@@ -80,7 +104,7 @@ describe('vendored methods (plan §8)', () => {
     const c = { f: 'F-01', nonce: N, pluginProject: false }
     const texts = (m: string | undefined) => [
       redTicketText({ ...c, pack: 'PACK', problems: [], method: m }), authorTicketText({ ...c, pack: 'PACK', method: m }),
-      debugTicketText({ ...c, failing: 'FAIL x', pack: 'PACK', method: m }), planTicketText({ ...c, intent: 'add', issues: [], method: m }),
+      debugTicketText({ ...c, command: 'test', failing: 'FAIL x', pack: 'PACK', method: m }), planTicketText({ ...c, intent: 'add', issues: [], method: m, exampleFiles: 'src/a.ts, tests/a.test.ts (new)' }),
       reviewTicketText({ ...c, acs: ['AC-001 adds'], rubrics: [], diff: '+x', redDiff: '', method: m }),
     ].map(t => t ?? '')
     for (const t of texts(method)) {
@@ -89,5 +113,19 @@ describe('vendored methods (plan §8)', () => {
       expect(t.indexOf('## PACK') < 0 || t.indexOf('## PACK') < t.indexOf(method)).toBe(true)
     }
     for (const t of texts(undefined)) expect(t).not.toContain('Reference method')
+  })
+})
+
+describe('the plan ticket per stack (live run 2026-10-20, owner decision)', () => {
+  test('the Python plan names tests with the criterion id in the form its RED check reads; the TypeScript plan has no such line', () => {
+    const plan = (s: typeof PYTHON) => planTicketText({ f: 'plan', nonce: N, pluginProject: false, intent: 'add clamp', issues: [], method: '', exampleFiles: s.exampleFiles, planRule: s.planRule }) ?? ''
+    const py = plan(PYTHON), ts = plan(TYPESCRIPT)
+    expect(py).toContain(PYTHON.planRule)
+    expect(py.indexOf('Rules: features are numbered')).toBeLessThan(py.indexOf(PYTHON.planRule))
+    expect(TYPESCRIPT.planRule).toBe('')
+    expect(ts.split('\n').length).toBe(py.split('\n').length - 1)
+    // the example in the rule is a name the RED check accepts, so the guidance cannot drift from what RED reads
+    const example = /::(test_\w+)/.exec(PYTHON.planRule)?.[1] ?? ''
+    expect(PYTHON.evalIdForms.some(f => new RegExp(f).exec(example)?.[1] === '001')).toBe(true)
   })
 })

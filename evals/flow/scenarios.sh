@@ -9,7 +9,7 @@
 INTENT_3F='Build the three features described in docs/intent.md, in that order, exactly as that file says.'
 
 verdict() { printf '%s\n' "$*" > "$RUN/verdict"; log "verdict: $*"; }
-scenario_list() { echo 'dryrun H123 H4 H5 S1 S2 S3 S4 S5 S6 S7 S8 S9 S10 S11'; }
+scenario_list() { echo 'snapshot dryrun trial H123 H4 H5 S1 S2 S3 S4 S5 S6 S7 S8 S9 S10 S11 S12'; }
 
 # A whole flow on the 3-F fixture, played to the end; the metrics are the point (plan §9).
 scenario_dryrun() {
@@ -17,6 +17,36 @@ scenario_dryrun() {
   owner '/flow-setup'
   approve setup || { verdict 'FAIL no setup echo'; return 1; }
   robot 5400; rc=$?
+  case "$rc" in
+    0) verdict 'PASS flow ended (released to the local remote)' ;;
+    1) verdict "FAIL blocked: $(field '.blocked.reason') at $(field '.task')" ;;
+    *) verdict "FAIL robot rc=$rc at $(field '.task')" ;;
+  esac
+  return "$rc"
+}
+
+# The 535 trial (plan §4.9, AC-06-5): the flow on the clean clone of repo 535 that the owner's session prepared
+# (FLOW_TRIAL_DIR: branch flow/r2-python-trial, no origin; repo-state.sh of 535 before and after, run by that session).
+# That session plays the owner (Anh Phát, 2026-10-20): the robot drives, stops at the plan approval (P3) so the plan is
+# read against the tickets, and waives nothing itself; at that stop or a block the run waits up to an hour for the
+# session to act in the pane and then write $RUN/resume (go on) or $RUN/stop (end).
+# Run 2 (Anh Phát, 2026-10-20): one small feature. Run 1 was 'Build tickets E-02 and C-06 (its steps 1-3 only) of
+# docs/ke-hoach-535.md, in that order.'
+INTENT_535='Build only the random strategy of ticket E-02 in docs/ke-hoach-535.md (its step 3, with step 4 for that strategy): a seeded builder behind the PortfolioBuilder interface whose tickets are pairwise distinct. Leave the coverage and model strategies for later.'
+scenario_trial() {
+  FX=$(cd "${FLOW_TRIAL_DIR:?}" && pwd -P) || return 1
+  fixture_common "$FX"; remote_add "$FX" "$NAME" flow/r2-python-trial; start_session
+  INTENT=$INTENT_535; UNTIL=P3; waived=6
+  owner '/flow-setup'
+  approve setup || { verdict 'FAIL no setup echo'; return 1; }
+  while :; do
+    robot 10800; rc=$?
+    case "$rc" in 1|2) ;; *) break ;; esac
+    UNTIL=''; log "rc=$rc at $(field '.task'): waiting for the owner's session ($RUN/resume or $RUN/stop)"; w=0
+    while [ ! -f "$RUN/resume" ] && [ ! -f "$RUN/stop" ] && [ "$w" -lt 3600 ]; do sleep 10; w=$((w + 10)); done
+    [ -f "$RUN/resume" ] || break
+    rm -f "$RUN/resume"; log 'resumed by the owner'
+  done
   case "$rc" in
     0) verdict 'PASS flow ended (released to the local remote)' ;;
     1) verdict "FAIL blocked: $(field '.blocked.reason') at $(field '.task')" ;;
@@ -37,6 +67,19 @@ selftest() {
   HOME=$HOME_SAVE
   line='  Duyệt bằng cách gõ: /flow-approve release 0a1b2c3d K7M2PQ   '
   [ "$(printf '%s' "$line" | grep -oE '/flow-approve release [0-9a-f]{8}( [A-Z2-9]{6})?')" = '/flow-approve release 0a1b2c3d K7M2PQ' ] || { echo 'FAIL approve parse'; return 1; }
+  # `outcome`: only the mod's own refusal counts as one, so no check can pass on an error the mod never sent (reviews r1)
+  # the two forms a real denial takes (tool.check's and tool.call's), and another plugin's words (code review of finding 4)
+  for case in 'true|flow: that Write is not the approved text|refused' 'true|Permission to use Write denied by plugin snagon-dev-mods: flow: that Write is not the approved text|refused' 'true|<tool_use_error>flow: no</tool_use_error>|refused' 'true|Permission to use Write denied by plugin other: flow: no|other-error' 'true|File has not been read yet|other-error' 'null||pending'; do
+    err=${case%%|*}; rest=${case#*|}; want=${rest#*|}
+    printf '{"kind":"call","at":1,"name":"Write","input":{"file_path":"/x/s.json"},"error":%s,"text":"%s"}\n' "$err" "${rest%%|*}" > "$t/ask.jsonl"
+    ASKED="$t/ask.jsonl"
+    [ "$(outcome Write s.json)" = "$want" ] || { echo "FAIL outcome: $case gave $(outcome Write s.json)"; return 1; }
+  done
+  printf '{"kind":"call","at":1,"name":"Write","input":{"file_path":"/x/s.json"},"error":true,"text":"flow: no"}\n{"kind":"call","at":2,"name":"Write","input":{"file_path":"/x/s.json"},"error":false,"text":"ok"}\n' > "$t/ask.jsonl"
+  [ "$(outcome Write s.json)" = ran ] || { echo 'FAIL outcome: a call that went through after a refused one must read as ran'; return 1; }
+  [ "$(outcome Agent s.json)" = none ] || { echo 'FAIL outcome: no such call must read as none'; return 1; }
+  printf '{"kind":"call","at":1,"name":"Edit","input":{"file_path":"/x/j.md","new_string":"about s.json"},"error":false,"text":"ok"}\n' > "$t/ask.jsonl"
+  [ "$(outcome Edit '' s.json)" = none ] || { echo 'FAIL outcome: a call that only mentions the file must not match it'; return 1; }
   echo 'selftest ok'
 }
 

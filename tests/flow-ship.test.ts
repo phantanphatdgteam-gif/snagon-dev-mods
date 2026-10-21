@@ -14,7 +14,7 @@ async function shipped(o: Partial<Remote> = {}): Promise<{ w: W; d: DriveOpts; r
   const ctx = await toH0()
   const rm: Remote = { head: HEAD_SHA, tip: null, pushes: 0, ...o }
   const before = ctx.d.run
-  ctx.d.run = argv => remoteGit(rm)(argv) ?? before?.(argv)
+  ctx.d.run = (argv, init) => remoteGit(rm)(argv, init) ?? before?.(argv, init)
   ctx.w.setHeadTree(AUTHOR_TREE)
   return { ...ctx, rm }
 }
@@ -135,15 +135,27 @@ describe('flow-ship: H1 approval and H2 push', () => {
   test('the right code from the prompt: pushed, the remote checked, the flow done and its record ended', async () => {
     const { w, rm } = await shipped()
     await run(w, 'flow-ship')
+    // A1: from /flow-ship to the approval the last seal's and the verified trees are kept by refs (the echo reads them)
+    expect([...w.refs.keys()].filter(k => k.startsWith('refs/snagon/flow/')).map(k => k.split('/').pop()).sort()).toEqual(['sealed', 'verified'])
     const reply = (await run(w, `flow-approve release ${hash8(w)} ${paneCode() ?? ''}`)).text
     expect(reply).toContain(`Released ${HEAD_SHA.slice(0, 12)} to main`)
     expect(rm.pushes).toBe(1)
     expect(rm.tip).toBe(HEAD_SHA)
     expect(latest(w)).toBeUndefined()
     expect([...w.files.entries()].some(([k, v]) => k.endsWith('.end') && v.includes('"end":"done"'))).toBe(true)
+    expect([...w.refs.keys()].filter(k => k.startsWith('refs/snagon/flow/'))).toEqual([]) // A1: the kept trees go with the end
     expect(w.session().value?.pending.release).toBeUndefined()
     expect(w.session().value?.release).toBeNull()
     expect(paneCode()).toBeNull()
+  })
+
+  test('NK-10 at the approval: a tag moved after the echo blocks the release and nothing is pushed', async () => {
+    const { w, rm } = await shipped()
+    await run(w, 'flow-ship')
+    w.refs.set('refs/tags/v1', 'b'.repeat(40))
+    await run(w, `flow-approve release ${hash8(w)} ${paneCode() ?? ''}`)
+    expect([rm.pushes, latest(w)?.blocked?.reason]).toEqual([0, 'tampered'])
+    expect(latest(w)?.blocked?.vars.file).toContain('refs/tags/v1')
   })
 
   test('the verify report edited after the echo: the approval is refused, nothing is pushed, /flow-ship blocks', async () => {

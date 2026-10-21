@@ -7,6 +7,7 @@ import { activeRecord, FLOW_ID, gitArgs } from './flow-fakes'
 import { sha256 } from '../hooks/flow-review'
 import { hashOf, type Io } from '../hooks/session'
 import { cfgHash } from '../hooks/flow-git'
+import { ENV_LIST_ARGV } from '../hooks/engine-io'
 
 const ROOT = '/host'
 const HOME = '/home/u'
@@ -75,6 +76,8 @@ function world(on: On, opts: { files?: Record<string, string>; exempt?: boolean;
   on('ui.open', () => ({ value: { isPlaced: true } as never }))
   on('process.run', ($, e) => {
     envs.push(e.init?.env); argvs.push([...e.argv])
+    // the names of this world's environment (engine-io.ts lists them once, for the BASH_FUNC reset)
+    if (e.argv.join('\0') === ENV_LIST_ARGV.join('\0')) return { value: ok(`${['HOME', ...Object.keys(opts.env ?? {})].join('\n')}\n=\n`) as never }
     const flowGit = opts.flowGit ? gitArgs(e.argv) : null, answered = flowGit ? opts.flowGit?.(flowGit) : undefined
     if (answered) return { value: answered as never }
     // a bare program name reaches the engine as `/usr/bin/env <name> …` (NK-02); answer it as the name
@@ -92,7 +95,7 @@ function world(on: On, opts: { files?: Record<string, string>; exempt?: boolean;
     if (cmd === '/bin/sh' && script === WORKER_SCRIPT) { spawns.push(rest.slice(3)); return { value: ok() as never } }
     if (cmd === '/bin/date') return { value: ok('2026-10-11 21:07\n') as never }
     if (cmd === '/usr/bin/uname') return { value: ok('Darwin\n') as never }
-    if (cmd === '/usr/bin/stat') return { value: (rest.includes('%HT') ? { ...ok(''), exitCode: 1 } : ok('1\n')) as never } // %HT: as a missing file
+    if (cmd === '/usr/bin/stat') return { value: (rest.includes('%HT') ? { ...ok(''), exitCode: 1, stderr: `stat: ${rest.at(-1) ?? ''}: stat: No such file or directory` } : ok('1\n')) as never } // %HT: as a missing file
     if (opts.flow && e.argv.includes('rev-parse')) return { value: ok(`${ROOT}\n${ROOT}/.git\n${ROOT}/.git\n${ROOT}/.git/index\n`) as never }
     if (opts.flow && e.argv.includes('symbolic-ref')) return { value: ok('main\n') as never }
     if (cmd === 'sqlite3') return { deny: 'ENOENT: sqlite3' }
@@ -101,6 +104,8 @@ function world(on: On, opts: { files?: Record<string, string>; exempt?: boolean;
       if (rest[0] === '-n') return { value: ok(text.split('\n').slice(-Number(rest[1]) - 1).join('\n')) as never }
       return { value: ok(text.slice(Number((rest[1] ?? '+1').slice(1)) - 1)) as never }
     }
+    // the flow's kept trees (A1): git (hardened, behind /usr/bin/env -u) has every object asked for
+    if (e.argv.includes('cat-file') && e.argv.some(a => a.startsWith('--batch-check'))) return { value: ok(String(e.init?.stdin ?? '').split('\n').filter(Boolean).map(o => `${o} tree\n`).join('')) as never }
     if (cmd === 'git') {
       const key = (rest[0] === '-c' ? rest.slice(2) : rest).join(' ')
       return { value: ok(opts.git?.[key] ?? '', opts.git && key in opts.git ? 0 : 1) as never }
@@ -127,13 +132,13 @@ const BLOCKS = [{ name: 'claudeMd', text: 'host rules' }]
 const HOST_FILE = { path: '/host/CLAUDE.md', kind: 'project', content: 'host rules\n' } as const
 
 describe('register', () => {
-  test('session start registers the memory tools, flow_status and the twelve owner commands', async ($, on) => {
+  test('session start registers the memory tools, flow_status and the thirteen owner commands', async ($, on) => {
     const names: string[] = [], commands: string[] = []
     world(on, { files: PLUGIN_FILES, tools: names })
     on('command.register', ($, e) => { commands.push(e.name); return { value: { command: e.name } as never } })
     await $.session.start(SESSION)
     expect(names.sort()).toEqual(['flow_check', 'flow_status', 'memory_get', 'memory_save', 'memory_search'])
-    expect(commands.sort()).toEqual(['flow-approve', 'flow-build', 'flow-decide', 'flow-off', 'flow-plan', 'flow-reject', 'flow-retry', 'flow-setup', 'flow-ship', 'flow-status', 'flow-verify', 'flow-waive'])
+    expect(commands.sort()).toEqual(['flow-allow', 'flow-approve', 'flow-build', 'flow-decide', 'flow-off', 'flow-plan', 'flow-reject', 'flow-retry', 'flow-setup', 'flow-ship', 'flow-status', 'flow-verify', 'flow-waive'])
   })
 
   test('every process the mod starts gets the filtered PATH: entries in the project, a temp folder or relative are dropped (NK-02)', async ($, on) => {
@@ -152,6 +157,16 @@ describe('register', () => {
     expect(at).toBeGreaterThanOrEqual(0)
     expect(w.argvs[at]?.[0]).toBe('/usr/bin/env')
     expect(w.envs[at]?.PATH).toBe('/usr/bin')
+  })
+
+  test('every process the mod starts gets each BASH_FUNC_<name>%% of the host empty; the names are listed once, by a child that is no shell (owner decision, after step 11)', async ($, on) => {
+    const w = world(on, { files: PLUGIN_FILES, env: { PATH: '/usr/bin', 'BASH_FUNC_cd%%': '() { echo forged; }', 'BASH_FUNC_find%%': '() { :; }' } })
+    await $.session.start(SESSION)
+    await $.tool.call({ tool: 'Read', file_path: '/host/README.md' } as never)
+    const rest = w.envs.filter((_, i) => w.argvs[i]?.[0] !== '/usr/bin/awk')
+    expect(w.argvs.filter(a => a[0] === '/usr/bin/awk')).toEqual([[...ENV_LIST_ARGV]])
+    expect(rest.length).toBeGreaterThan(0)
+    expect(rest.every(e => e?.['BASH_FUNC_cd%%'] === '' && e?.['BASH_FUNC_find%%'] === '' && e?.PATH === '/usr/bin')).toBe(true)
   })
 
   test('settings that cannot be read leave the system folders, never the host PATH (NK-02)', async ($, on) => {
@@ -214,7 +229,7 @@ describe('register', () => {
 
   test('a commit that would add a token or a private file is refused, naming the file but not the value', async ($, on) => {
     const diff = ['diff --git a/app.py b/app.py', '--- a/app.py', '+++ b/app.py', '@@ -0,0 +1 @@', `+KEY = "${FAKE_TOKEN}"`].join('\n')
-    world(on, { files: PLUGIN_FILES, git: { 'diff --cached --name-only -z --diff-filter=d': 'app.py\0.snagon/memory/memory.jsonl\0', 'diff --cached -U0 --text --no-color --no-ext-diff --no-textconv': diff } })
+    world(on, { files: PLUGIN_FILES, git: { 'diff --cached --name-only -z --diff-filter=d': 'app.py\0.snagon/memory/memory.jsonl\0', 'diff --cached -U0 --text --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/': diff } })
     await $.session.start(SESSION)
     await $.tool.call({ tool: 'Bash', command: 'ls' } as never) // the first-Bash gate
     const out = await $.tool.call({ tool: 'Bash', command: 'git commit -m "add app"' } as never)
@@ -226,7 +241,7 @@ describe('register', () => {
   })
 
   test('a clean commit goes through', async ($, on) => {
-    world(on, { files: PLUGIN_FILES, git: { 'diff --cached --name-only -z --diff-filter=d': 'app.py\0', 'diff --cached -U0 --text --no-color --no-ext-diff --no-textconv': '+++ b/app.py\n+print(1)' } })
+    world(on, { files: PLUGIN_FILES, git: { 'diff --cached --name-only -z --diff-filter=d': 'app.py\0', 'diff --cached -U0 --text --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/': '+++ b/app.py\n+print(1)' } })
     await $.session.start(SESSION)
     await $.tool.call({ tool: 'Bash', command: 'ls' } as never)
     expect(await $.tool.call({ tool: 'Bash', command: 'git commit -m ok' } as never)).toMatchObject({ result: 'ran' })
@@ -297,7 +312,7 @@ describe('register', () => {
   })
 
   test('a commit naming paths is checked against all tracked changes', async ($, on) => {
-    world(on, { files: PLUGIN_FILES, git: { 'rev-parse --verify --quiet HEAD': 'abc', 'diff HEAD --name-only -z --diff-filter=d': '.env.local\0', 'diff HEAD -U0 --text --no-color --no-ext-diff --no-textconv': '' } })
+    world(on, { files: PLUGIN_FILES, git: { 'rev-parse --verify --quiet HEAD': 'abc', 'diff HEAD --name-only -z --diff-filter=d': '.env.local\0', 'diff HEAD -U0 --text --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/': '' } })
     await $.session.start(SESSION)
     await $.tool.call({ tool: 'Bash', command: 'ls' } as never)
     const out = await $.tool.call({ tool: 'Bash', command: 'git commit -m x .env.local' } as never)
@@ -306,7 +321,7 @@ describe('register', () => {
 
   test('a push is checked against every unpushed commit; deleting a private file is allowed', async ($, on) => {
     const range = 'HEAD --branches feature --not --remotes --max-count=500'
-    world(on, { files: PLUGIN_FILES, git: { 'rev-list --count HEAD --branches feature --not --remotes': '3\n', [`log -z --name-only --format= --diff-filter=d --diff-merges=first-parent ${range}`]: 'app.py\0', [`log -p -U0 --text --no-color --no-ext-diff --no-textconv --diff-merges=first-parent --format= ${range}`]: ['diff --git a/app.py b/app.py', '+++ b/app.py', '@@ -1 +1 @@', `+K = "${FAKE_TOKEN}"`].join('\n') } })
+    world(on, { files: PLUGIN_FILES, git: { 'rev-list --count HEAD --branches feature --not --remotes': '3\n', [`log -z --name-only --format= --diff-filter=d --diff-merges=first-parent ${range}`]: 'app.py\0', [`log -p -U0 --text --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ --diff-merges=first-parent --format= ${range}`]: ['diff --git a/app.py b/app.py', '+++ b/app.py', '@@ -1 +1 @@', `+K = "${FAKE_TOKEN}"`].join('\n') } })
     await $.session.start(SESSION)
     await $.tool.call({ tool: 'Bash', command: 'ls' } as never)
     const pushed = await $.tool.call({ tool: 'Bash', command: 'git push origin feature' } as never)
@@ -314,7 +329,7 @@ describe('register', () => {
   })
 
   test('removing a tracked private file can be committed (deletions are not listed)', async ($, on) => {
-    world(on, { files: PLUGIN_FILES, git: { 'diff --cached --name-only -z --diff-filter=d': '', 'diff --cached -U0 --text --no-color --no-ext-diff --no-textconv': 'diff --git a/.env b/.env\n--- a/.env\n+++ /dev/null\n@@ -1 +0,0 @@\n-SECRET=1' } })
+    world(on, { files: PLUGIN_FILES, git: { 'diff --cached --name-only -z --diff-filter=d': '', 'diff --cached -U0 --text --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/': 'diff --git a/.env b/.env\n--- a/.env\n+++ /dev/null\n@@ -1 +0,0 @@\n-SECRET=1' } })
     await $.session.start(SESSION)
     await $.tool.call({ tool: 'Bash', command: 'ls' } as never)
     expect(await $.tool.call({ tool: 'Bash', command: 'git commit -m "remove .env"' } as never)).toMatchObject({ result: 'ran' })
@@ -348,11 +363,33 @@ describe('register', () => {
   })
 
   test('before the first commit, commit -a is checked against the index', async ($, on) => {
-    world(on, { files: PLUGIN_FILES, git: { 'diff --cached --name-only -z --diff-filter=d': 'id_ed25519\0', 'diff --cached -U0 --text --no-color --no-ext-diff --no-textconv': '' } })
+    world(on, { files: PLUGIN_FILES, git: { 'diff --cached --name-only -z --diff-filter=d': 'id_ed25519\0', 'diff --cached -U0 --text --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/': '' } })
     await $.session.start(SESSION)
     await $.tool.call({ tool: 'Bash', command: 'ls' } as never)
     const out = await $.tool.call({ tool: 'Bash', command: 'git commit -am first' } as never)
     expect(String((out as { deny?: string }).deny)).toContain('private path: id_ed25519')
+  })
+
+  const CERT = ['-----BEGIN CERTIFICATE-----', 'MIIB'.repeat(16), 'AA==', '-----END CERTIFICATE-----']
+  const stagedPem = (path: string, lines: string[]) => ({
+    'diff --cached --name-only -z --diff-filter=d': `${path}\0`,
+    'diff --cached -U0 --text --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/': [`diff --git a/${path} b/${path}`, 'new file mode 100644', '--- /dev/null', `+++ b/${path}`, `@@ -0,0 +1,${lines.length} @@`, ...lines.map(l => `+${l}`)].join('\n'),
+  })
+
+  test('a staged .pem of certificates alone may be committed (535 trial, M-10)', async ($, on) => {
+    world(on, { files: PLUGIN_FILES, git: stagedPem('tests/fixtures/ca.pem', CERT) })
+    await $.session.start(SESSION)
+    await $.tool.call({ tool: 'Bash', command: 'ls' } as never)
+    expect((await $.tool.call({ tool: 'Bash', command: 'git commit -m ca' } as never) as { deny?: string }).deny).toBeUndefined()
+  })
+
+  test('a staged .pem that also holds a private key may not be committed (535 trial, M-10)', async ($, on) => {
+    world(on, { files: PLUGIN_FILES, git: stagedPem('tests/fixtures/k.pem', [...CERT, '-----BEGIN ' + 'PRIVATE KEY-----', 'MIIE'.repeat(16), '-----END ' + 'PRIVATE KEY-----']) })
+    await $.session.start(SESSION)
+    await $.tool.call({ tool: 'Bash', command: 'ls' } as never)
+    const keyed = String((await $.tool.call({ tool: 'Bash', command: 'git commit -m k' } as never) as { deny?: string }).deny)
+    expect(keyed).toContain('private path: tests/fixtures/k.pem')
+    expect(keyed).toContain('possible secret in tests/fixtures/k.pem')
   })
 
   test('git inside a wrapper or after cd is refused with a reason', async ($, on) => {

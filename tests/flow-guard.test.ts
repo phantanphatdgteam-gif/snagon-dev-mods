@@ -2,12 +2,12 @@ import { describe, expect, test } from 'claude-code/testing'
 import { checkCall, placeEdit, stripCall, recheck, recheckRead, viewOf, activeLookup, guardUnknown, screenMcpRefusals, type GuardCtx, type GuardFs, type Verdict } from '../hooks/flow-guard'
 import { sha256 } from '../hooks/flow-review'
 import { ROUTING } from '../flow/data/routing'
-import { TYPESCRIPT } from '../flow/data/stacks'
+import { PUBLISH_UNION } from '../flow/data/common'
 import type { FlowRecord, ListResult } from '../hooks/flow-state'
 
 const HOME = '/Users/u'
 const ROOT = `${HOME}/proj`
-const PLUGIN = `${HOME}/.claude/plugins/cache/m/snagon-dev-mods/0.5.3`
+const PLUGIN = `${HOME}/.claude/plugins/cache/m/snagon-dev-mods/0.6.0`
 const SETTINGS = `${ROOT}/.claude/settings.local.json`
 const PRE = '{"permissions":{}}\n'
 
@@ -80,7 +80,7 @@ const ctxOf = (over: Partial<GuardCtx> = {}): GuardCtx => ({
   root: ROOT, rootAliases: [ROOT], cwd: ROOT, home: HOME, caseFold: true,
   allowTools: ROUTING.allowTools, allowMcp: ['mcp__github__get_issue', 'mcp__computer-use__screenshot', 'mcp__playwright__browser_take_screenshot'],
   modTools: ['mcp__snagon-dev-mods__flow_status'], skills: ['code-review-and-quality', 'snagon-dev-mods:code-review-and-quality'],
-  freeSpawn: ROUTING.freeSpawn, protectedRoots: [PLUGIN, `${ROOT}/vendor/plug`], publish: TYPESCRIPT.publish, fs: fakeFs(TREE), ...over,
+  freeSpawn: ROUTING.freeSpawn, protectedRoots: [PLUGIN, `${ROOT}/vendor/plug`], publish: PUBLISH_UNION, fs: fakeFs(TREE), ...over,
 })
 const verdict = (tool: string, input: unknown, over: Partial<GuardCtx> = {}, agentId?: string): Promise<Verdict> =>
   checkCall({ tool, input, ...(agentId ? { agentId } : {}) }, ctxOf(over))
@@ -270,6 +270,18 @@ describe('flow guard: tools, MCP, Bash, Agent and Skill', () => {
     ]
     for (const c of denied) expect([c, await bash(c)]).toEqual([c, 'deny'])
     expect(await decided('Bash', {})).toBe('deny')
+  })
+
+  test('Python publishing is denied in its common spellings, through wrappers and with options between; Python work passes (AC-PY-9, AC-STK-11)', async () => {
+    const bash = (command: string) => decided('Bash', { command })
+    const denied = [
+      'uv publish', 'uv publish --token x dist/*', 'uv --directory pkg publish', 'python -m twine upload dist/*', 'python3 -m twine upload --repository testpypi dist/*',
+      '.venv/bin/python -m twine upload dist/*', 'twine upload dist/*', '.venv/bin/twine upload dist/*', 'uvx twine upload dist/*', 'uv run twine upload dist/*',
+      'poetry publish --build', 'poetry publish -r corp', 'pdm publish', 'hatch publish', 'flit publish', "sh -c 'uv publish'", 'cd pkg && poetry publish', 'UV_PUBLISH_TOKEN=x uv publish',
+    ]
+    for (const c of denied) expect([c, await bash(c)]).toEqual([c, 'deny'])
+    for (const c of ['uv sync', 'uv run pytest', '.venv/bin/pytest -k upload', 'python -m pytest tests', 'poetry install', 'pip install twine', 'uv pip install twine', 'twine check dist/*', 'python -m build', 'uv build'])
+      expect([c, await bash(c)]).toEqual([c, 'pass'])
   })
 
   test('stripCall turns dangerouslyDisableSandbox off before the engine sees a Bash call; other calls are untouched', () => {

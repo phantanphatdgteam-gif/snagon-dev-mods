@@ -5,7 +5,13 @@ import fs from 'node:fs'
 
 const root = new URL('..', import.meta.url)
 const routing = fs.readFileSync(new URL('flow/data/routing.ts', root), 'utf8')
-const agents = [...routing.matchAll(/(?:agent|typescript): '([\w-]+)'/g)].map(m => m[1])
+// the agents routing names, and each stack's own (its data's `routing`)
+const stackFiles = fs.readdirSync(new URL('flow/data/stacks/', root)).filter(n => n.endsWith('.ts')).map(n => fs.readFileSync(new URL(`flow/data/stacks/${n}`, root), 'utf8'))
+assert.ok(stackFiles.length > 0 && stackFiles.every(t => /routing: \{[^}]*\}/.test(t)), 'each stack names its routing')
+// AC-BF-2, AC-BF-3: each stack names its build fixer (the debugger where it has none of its own, GAP-R2-15); the loop
+// below checks that every agent named here is in agents/ and allows Skill
+assert.ok(stackFiles.every(t => /\bbuildFixer: '[\w-]+'/.test(/routing: \{([^}]*)\}/.exec(t)?.[1] ?? '')), 'each stack names its build fixer')
+const agents = [...routing.matchAll(/agent: '([\w-]+)'/g), ...stackFiles.flatMap(t => [...(/routing: \{([^}]*)\}/.exec(t)?.[1] ?? '').matchAll(/'([\w-]+)'/g)])].map(m => m[1])
 assert.ok(agents.length >= 6, 'routing names its agents')
 // Routed agents allow Skill (plan §8): a ticket in a plugin project starts with Skill(plugin-authoring), and an agent's
 // `tools:` line limits Skill too. No `tools:` line means every tool; `disallowedTools:` takes tools away.
@@ -31,7 +37,7 @@ assert.ok(loop.includes('Immediate Agent Usage'), 'flow-loop names the agents ru
 // A plugin's agent is dispatched only as `<plugin>:<name>` (checked live on 2.1.302): the prefix is this plugin's name.
 const plugin = JSON.parse(fs.readFileSync(new URL('.claude-plugin/plugin.json', root), 'utf8')).name
 assert.equal(/AGENT_PLUGIN = '([\w-]+)'/.exec(routing)?.[1], plugin, 'routed agents are dispatched under the plugin name')
-for (const f of fs.readdirSync(new URL('flow/data/', root))) {
+for (const f of fs.readdirSync(new URL('flow/data/', root), { recursive: true }).filter(n => n.endsWith('.ts'))) {
   const src = fs.readFileSync(new URL(`flow/data/${f}`, root), 'utf8')
   assert.ok(!/from 'node:|require\(/.test(src), `${f} imports nothing from Node (the hooks module runs without Node)`)
   assert.ok(src.split('\n').length <= 400, `${f} stays under 400 lines`)

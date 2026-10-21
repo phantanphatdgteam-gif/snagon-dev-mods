@@ -1,7 +1,7 @@
 // Secret patterns shared by memory saves, the git guard and flow's redaction. Matches report the pattern's name, never the value.
 
-const BEGIN_KEY = /-----BEGIN [A-Z ]*PRIVATE KEY(?: BLOCK)?-----/ // PEM, OpenSSH and PGP armor
-const END_KEY = /-----END [A-Z ]*PRIVATE KEY(?: BLOCK)?-----/
+const BEGIN_KEY = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----/ // PEM, OpenSSH and PGP armor
+const END_KEY = /-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----/
 /** Secrets that fit on one line: redactSecrets replaces each where it stands. */
 const TOKEN_PATTERNS: readonly { name: string; re: RegExp }[] = [
   { name: 'Anthropic API key', re: /\bsk-ant-[A-Za-z0-9_-]{20,}/ },
@@ -26,7 +26,7 @@ const TOKENS = TOKEN_PATTERNS.map(p => ({ text: `[secret removed: ${p.name}]`, r
  * run of backslashes costs linear time. */
 const ESCAPES = /\\{1,4}(?:[nr/]|u[0-9a-fA-F]{4})/g
 /** A BEGIN marker with the body and END that follow it on its line (a key held in one string), else a marker alone. */
-const KEY_INLINE = /-----BEGIN [A-Z ]*PRIVATE KEY(?: BLOCK)?-----(?:(?:\\{1,4}(?:[nr/]|u[0-9a-fA-F]{4})|[A-Za-z0-9+/=\s:,.-])*?-----END [A-Z ]*PRIVATE KEY(?: BLOCK)?-----)?|-----END [A-Z ]*PRIVATE KEY(?: BLOCK)?-----/g
+const KEY_INLINE = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----(?:(?:\\{1,4}(?:[nr/]|u[0-9a-fA-F]{4})|[A-Za-z0-9+/=\s:,.-])*?-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----)?|-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----/g
 const FULL_LINE = 60 // PEM wraps key bodies at 64 characters, OpenSSH at 70, MIME base64 at 76
 
 type Kind = 'full' | 'short' | 'sum' | 'header' | null
@@ -86,18 +86,63 @@ export function isForbiddenPath(path: string): boolean {
   return FORBIDDEN_PATHS.some(re => re.test(path))
 }
 
-/** Secret findings in a unified diff's added lines, as `file: pattern` (one per file and pattern). */
-export function scanDiff(diff: string): string[] {
-  const found = new Set<string>()
+/** A unified diff in order: each file a `+++` header names (`text` null; the tab git writes after a name with a space
+ * dropped), then each added line with its file (`(unknown file)` before a header names one). */
+function* walk(diff: string): Generator<{ file: string; text: string | null }> {
   let file = ''
   let header = false // between "diff --git" or "--- " and the first "@@": "+++ " names the file there, and only there
   for (const line of diff.split('\n')) {
     if (line.startsWith('diff --git ') || (line.startsWith('--- ') && !file)) { header = true; continue }
     if (header && line.startsWith('--- ')) continue
-    if (header && line.startsWith('+++ ')) { file = line.slice(4).replace(/^b\//, ''); continue }
+    if (header && line.startsWith('+++ ')) { file = line.slice(4).replace(/\t$/, '').replace(/^b\//, ''); yield { file, text: null }; continue }
     if (line.startsWith('@@')) { header = false; continue }
     if (header || !line.startsWith('+')) continue
-    for (const name of findSecrets(line.slice(1))) found.add(`${file || '(unknown file)'}: ${name}`)
+    yield { file: file || '(unknown file)', text: line.slice(1) }
   }
+}
+
+/** Secret findings in a unified diff's added lines, as `file: pattern` (one per file and pattern). */
+export function scanDiff(diff: string): string[] {
+  const found = new Set<string>()
+  for (const a of walk(diff)) if (a.text !== null) for (const name of findSecrets(a.text)) found.add(`${a.file}: ${name}`)
   return [...found]
+}
+
+/** A unified diff's added lines by file; a file whose header shows with no line added (lines removed only) maps to []. */
+export function addedLines(diff: string): Map<string, string[]> {
+  const by = new Map<string, string[]>()
+  for (const a of walk(diff)) {
+    if (!by.has(a.file)) by.set(a.file, [])
+    if (a.text !== null) by.get(a.file)?.push(a.text)
+  }
+  return by
+}
+
+/** The private paths whose content may show they hold no secret: a PEM file can carry only certificates (public). */
+export const CERT_PATH = /\.pem$/i
+const CERT_ARMOR = /^-----(BEGIN|END) CERTIFICATE-----$/
+const BASE64_LINE = /^[A-Za-z0-9+/]+={0,2}$/
+/** Lines a certificate file may hold between its blocks: blank, a `#` comment, openssl's subject and issuer lines. */
+const BETWEEN_BLOCKS = /^(?:$|#|subject=|issuer=)/
+/** Whether a PEM text holds certificates and nothing else: blocks under certificate markers that pair up (one at least),
+ * only base64 inside them, only blank, comment, subject and issuer lines between them, and no secret pattern anywhere (a
+ * private key marker, a token in a comment). A key in any other form (PuTTY, JWK, another armor) fails one of these.
+ * The base64 inside a block is not decoded. */
+export function isCertificateOnly(text: string): boolean {
+  if (findSecrets(text).length) return false
+  let open = false, blocks = 0
+  for (const raw of text.split('\n')) {
+    const line = raw.trim(), m = CERT_ARMOR.exec(line)
+    if (m) {
+      if ((m[1] === 'BEGIN') === open) return false // a BEGIN inside a block, or an END outside one
+      open = !open
+      if (!open) blocks += 1
+    } else if (!(open ? BASE64_LINE : BETWEEN_BLOCKS).test(line)) return false
+  }
+  return !open && blocks > 0
+}
+/** Whether lines a diff adds to a certificate file could all belong to one (markers, base64, blank, comment, subject and
+ * issuer lines) with no secret pattern among them: what a commit range adds to a `.pem` before its last version. */
+export function isCertificateLines(lines: readonly string[]): boolean {
+  return lines.every(raw => { const line = raw.trim(); return CERT_ARMOR.test(line) || BASE64_LINE.test(line) || BETWEEN_BLOCKS.test(line) }) && !findSecrets(lines.join('\n')).length
 }

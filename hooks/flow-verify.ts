@@ -3,12 +3,14 @@
 // waiver), scans the whole flow diff for junk (a fix ticket, then a waiver), and writes docs/flow/verify.md in the
 // owner's language. A report that would hold a secret is written redacted and blocks the flow (publish); a clean one
 // freezes the verified tree and its hash, and the flow waits for /flow-ship.
+import { debugRole } from '../flow/data/routing'
 import { fill } from '../flow/data/templates'
-import { TYPESCRIPT } from '../flow/data/stacks'
+import type { Role } from '../flow/data/types'
 import { afterPass, pointerFields } from './flow'
-import { flowTree, git, gitPaths, ignoredSet, remoteTip } from './flow-git'
+import { blobsAt, flowTree, git, gitPaths, ignoredSet, remoteTip } from './flow-git'
+import { keepTrees, neededTrees } from './flow-refs'
 import { parseDiff, scan } from './flow-scan'
-import { declChanges, evalIdsInTests, judgeRun, timeoutFor, MAX_RUN_MS } from './flow-judge'
+import { judgeRun, timeoutFor, MAX_RUN_MS } from './flow-judge'
 import { debugTicketText, fixTicketText, newNonce, sha256 } from './flow-review'
 import { globRe, type Plan } from './flow-plan'
 import { viewText } from './flow-pack'
@@ -17,22 +19,21 @@ import { dropEcho, visibleText } from './flow-owner'
 import { CLOSED, updateRecord, type Blocked, type FlowRecord, type UpdateResult } from './flow-state'
 import { issueTicket } from './flow-ticket'
 import { lintNow, PLAN_FILE } from './flow-planning'
-import { frozenBaseline, IGNORED_SKIP, type BaselineFile } from './flow-baseline'
-import { judgedRun } from './flow-run'
+import { frozenBaseline, ignoredSkip, type BaselineFile } from './flow-baseline'
+import { judgedBlock, judgedRun } from './flow-run'
 import { capRound } from './flow-build'
 import { methodText } from './flow-method'
-import { mergeFindings } from './flow-judging'
+import { mergeFindings, testTexts, unsettled, withSigs } from './flow-judging'
 import { diffBetween } from './flow-reviewing'
 import { flowCard } from './flow-turn'
+import { stackOf } from './stacks/index'
 
 export const VERIFY_FILE = 'docs/flow/verify.md'
 const WAIVERS = '.snagon/flow/waivers.md'
-/** A waivers view line: `- <FL-n|J-n|check:<cmdId>>: <reason>`. */
-const WAIVER = /^- ((?:FL|J)-\d+|check:[\w-]+): (.*)$/
+/** A waivers view line: `- <FL-n|J-n|check:<cmdId>|allow red F-NN>: <reason>`. */
+const WAIVER = /^- ((?:FL|J)-\d+|check:[\w-]+|allow red F-\d{2}): (.*)$/
 const GO_ON = 'flow: verify starts. Call flow_check.'
 const START_PROMPT = 'flow: a ticket is ready. Call flow_status and start the agent exactly as it says.'
-const TEST_RUNNERS = new Set(['vitest', 'jest'])
-const TESTS = TYPESCRIPT.testFiles.map(globRe)
 /** The blocks /flow-verify answers: a report that held a secret or was changed after verify, a push the remote refused. */
 const AGAIN = new Set(['publish', 'pushRejected', 'reportChanged'])
 const settled = (out: UpdateResult): FlowRecord => { dropView(); if (!out.ok) throw new Error(`flow: the record could not be written (${out.reason})`); return out.record }
@@ -72,17 +73,21 @@ export async function verifyCommand(h: FlowHost): Promise<string> {
 }
 
 type Ran = { id: string; runner: string; pass: boolean; waived: boolean; output: string }
-/** V1 and V2: every command at the worktree; the test runner proves the eval id of every Required criterion. */
-async function runAll(h: FlowHost, r: FlowRecord, plan: Plan, base: BaselineFile, diffText: string): Promise<Ran[] | Blocked> {
-  const p = await gitPaths(h.io, r.root), files = parseDiff(diffText)
-  const required = plan.acs.filter(a => a.required).map(a => a.id), present = await evalIdsInTests(h.io, p, TYPESCRIPT.testFiles)
-  const decl = declChanges(files, files.map(x => x.path).filter(x => TESTS.some(t => t.test(x))))
+/** V1 and V2: every command at the worktree; the test runner proves the eval id of every Required criterion. `trees`:
+ * the two sides of `diffText`. */
+async function runAll(h: FlowHost, r: FlowRecord, plan: Plan, base: BaselineFile, diffText: string, trees: { from: string; now: string }): Promise<Ran[] | Blocked> {
+  const p = await gitPaths(h.io, r.root), files = parseDiff(diffText), { data, code } = stackOf(r), globs = data.testFiles.map(globRe)
+  const required = plan.acs.filter(a => a.required).map(a => a.id), present = await code.evalIdsInTests(h.io, p, data.testFiles)
+  const tests = files.filter(x => globs.some(t => t.test(x.path)))
+  let texts: Awaited<ReturnType<typeof testTexts>>
+  try { texts = await testTexts(h.io, p, trees.from, trees.now, tests) } catch (err) { return { reason: 'couldNotRun', vars: { detail: `verify: ${err instanceof Error ? err.message : String(err)}` } } }
+  const decl = code.declChanges(files, tests.map(x => x.path), texts)
   const out: Ran[] = []
   for (const cmd of r.setup?.commands ?? []) {
     const b = base.commands[cmd.id]
     const run = await judgedRun(h, r, cmd, b ? timeoutFor(b.ms) : MAX_RUN_MS)
-    if (!run.ok) return run.reason === 'tooSlow' ? { reason: 'tooSlow', vars: { command: cmd.id, limit: 'its time limit' } } : { reason: 'couldNotRun', vars: { detail: `${cmd.id}: ${run.detail}` } }
-    const v = judgeRun(cmd, run.run, b ?? null, TYPESCRIPT, TEST_RUNNERS.has(cmd.runner) ? required : [], present, run.report, decl)
+    if (!run.ok) return judgedBlock(cmd, run)
+    const v = judgeRun(cmd, run.run, b ?? null, data, data.testRunners.includes(cmd.runner) ? required : [], present, run.report, decl)
     const output = [run.run.output, ...v.newFailures.map(s => `${s.file} > ${s.id}: ${s.message}`), ...v.evalProblems, v.note ?? ''].filter(Boolean).join('\n')
     out.push({ id: cmd.id, runner: cmd.runner, pass: v.pass, waived: false, output })
   }
@@ -98,7 +103,7 @@ async function report(h: FlowHost, r: FlowRecord, plan: Plan, base: BaselineFile
   const assumed = Object.entries(r.assumptions ?? {}).flatMap(([f, lines]) => lines.map(text => t('verify.assumption', { f, text })))
   const followups = r.seals.flatMap(s => s.followups)
   // a waived test runner proved nothing
-  const proven = ran.every(x => x.pass || !TEST_RUNNERS.has(x.runner))
+  const testRunners = stackOf(r).data.testRunners, proven = ran.every(x => x.pass || !testRunners.includes(x.runner))
   return [
     t('verify.title'), '', t('verify.features'),
     ...r.seals.map(s => t('verify.seal', { f: s.f, tree: s.tree.slice(0, 12), ids: s.evalIds.join(', ') || '—', findings: Object.entries(s.findings).filter(([, n]) => n > 0).map(([k, n]) => `${k} ${n}`).join(', ') || '0', followups: s.followups.join(', ') || '—' })),
@@ -113,11 +118,11 @@ async function report(h: FlowHost, r: FlowRecord, plan: Plan, base: BaselineFile
   ].join('\n')
 }
 
-/** A verify ticket (debug or junk fix) in the verify scope's rounds, or `atCap` once they are used. */
-async function verifyTicket(h: FlowHost, r: FlowRecord, kind: 'd' | 'e', build: (nonce: string) => string | null, atCap: Blocked): Promise<void> {
+/** A verify ticket (debug or junk fix) for `role` in the verify scope's rounds, or `atCap` once they are used. */
+async function verifyTicket(h: FlowHost, r: FlowRecord, kind: 'd' | 'e', role: Role, build: (nonce: string) => string | null, atCap: Blocked): Promise<void> {
   const round = capRound(r, 'verify', 'verify', 'verify', kind)
   if (!round.ok) return void (await blockFlow(h, r.flowId, atCap))
-  const id = await issueTicket(h, r, { role: kind === 'd' ? 'debugger' : 'author', f: 'verify', kind: kind === 'd' ? 'debug' : 'fix', build, also: round.also })
+  const id = await issueTicket(h, r, { role, f: 'verify', kind: kind === 'd' ? 'debug' : 'fix', build, also: round.also })
   if (id === null) return void (await blockFlow(h, r.flowId, { reason: 'couldNotRun', vars: { detail: 'the verify ticket is over the ticket size cap' } }))
   await h.submit(START_PROMPT)
 }
@@ -135,7 +140,7 @@ export async function verifyStep(h: FlowHost, r: FlowRecord): Promise<void> {
   const from = r.frozen.scanBase ?? (r.frozen.baseSha && r.frozen.baseSha !== 'none' ? r.frozen.baseSha : r.frozen[`start:${r.features?.[0]?.id ?? ''}`])
   if (!from) return block({ reason: 'couldNotRun', vars: { detail: 'verify: the flow has no start tree to compare with' } })
   const diffText = await diffBetween(h, p, from, now)
-  const runs = await runAll(h, r, lint.plan, held.base, diffText)
+  const runs = await runAll(h, r, lint.plan, held.base, diffText, { from, now })
   if (!Array.isArray(runs)) return block(runs)
   // the baseline once more after the runs (a change while they ran blocks), and the newest record for the owner's
   // waivers and decisions taken while the commands ran
@@ -146,30 +151,34 @@ export async function verifyStep(h: FlowHost, r: FlowRecord): Promise<void> {
   const r2 = fresh.record, ran = runs.map(x => ({ ...x, waived: !x.pass && r2.frozen[`waive:check:${x.id}`] === 'yes' }))
   const red = ran.find(x => !x.pass && !x.waived)
   const pluginProject = r.setup?.pluginProject ?? false
+  // the first red command routes the debug ticket: a typecheck, build or lint to the stack's build fixer, a test to the
+  // debugger (R2 plan §4.4)
   if (red) {
-    const method = await methodText(h.io, 'debugger')
-    return verifyTicket(h, r2, 'd', nonce => debugTicketText({ f: 'verify', nonce, pluginProject, failing: red.output, pack: '', method }), { reason: 'redCheck', vars: { command: red.id, cmdId: red.id } })
+    const role = debugRole(red.id), method = await methodText(h.io, role)
+    return verifyTicket(h, r2, 'd', role, nonce => debugTicketText({ f: 'verify', nonce, pluginProject, command: red.id, failing: red.output, pack: '', method }), { reason: 'redCheck', vars: { command: red.id, cmdId: red.id } })
   }
   // V4: junk in the whole change, minus what the owner already settled in a feature.
-  // ponytail: matched by rule and location, so junk a later feature moved to another line is raised again; match on the line text if that bites.
-  const ignoredNow = (await ignoredSet(h.io, p, IGNORED_SKIP)).hash
-  const s = scan(diffText, [], { stack: TYPESCRIPT, frozen: [], ignored: { before: r.frozen.ignored ?? ignoredNow, after: ignoredNow } })
+  const stack = stackOf(r), ignoredNow = (await ignoredSet(h.io, p, ignoredSkip(stack.data))).hash
+  // the changed code files whole, from the diff's own new tree (a hunk can start inside a string)
+  let texts: Record<string, string>
+  try { texts = await blobsAt(h.io, p, now, parseDiff(diffText).filter(x => x.status !== 'deleted' && stack.code.lex(x.path, []) !== null).map(x => x.path)) } catch (err) { return block({ reason: 'couldNotRun', vars: { detail: `scan: ${err instanceof Error ? err.message : String(err)}` } }) }
+  const s = scan(diffText, [], { stack, frozen: [], texts, ignored: { before: r.frozen.ignored ?? ignoredNow, after: ignoredNow } })
   if (s.status === 'error') return block({ reason: 'couldNotRun', vars: { detail: `scan: ${s.error ?? ''}` } })
-  // junk a feature already settled (on the newest record, so a decision taken while the commands ran counts) is left out
-  const found = (x: FlowRecord) => {
-    const settledKeys = new Set(x.findings.filter(y => y.f !== 'verify' && CLOSED.has(y.status)).map(y => `${y.rubricId}\u0000${y.loc}`))
-    return s.findings.filter(y => y.kind === 'J' && !settledKeys.has(`${y.rule}\u0000${y.loc}`))
-  }
+  // junk a feature already settled (on the newest record, so a decision taken while the commands ran counts) is left out,
+  // wherever a later change moved its line (535 trial M-3)
+  const scanned = withSigs(s.findings.filter(y => y.kind === 'J'), texts)
+  const found = (x: FlowRecord) => unsettled(x.findings.filter(y => y.f !== 'verify' && CLOSED.has(y.status)), scanned, x.findings.filter(y => y.f === 'verify'))
   // merged into the newest record: an owner decision taken while the commands ran stays, and decides what blocks
   const after = settled(await updateRecord(h.io, h.home, r.flowId, h.sessionId, x => ({ ...x, findings: mergeFindings(x.findings, 'verify', found(x), x.lastIds) })))
   const junk = after.findings.filter(x => x.f === 'verify' && x.status === 'open' && x.sev === 'HIGH')
   if (junk.length) {
     const details = (await session(h)).value.details, first = junk[0]
-    return verifyTicket(h, after, 'e', nonce => fixTicketText({ f: 'verify', nonce, pluginProject, findings: junk.map(x => ({ ...x, ...details[x.id] })) }), { reason: 'junk', vars: { id: first?.id ?? '', rule: first?.rubricId ?? '', location: first?.loc ?? '' } })
+    return verifyTicket(h, after, 'e', 'author', nonce => fixTicketText({ f: 'verify', nonce, pluginProject, findings: junk.map(x => ({ ...x, ...details[x.id] })) }), { reason: 'junk', vars: { id: first?.id ?? '', rule: first?.rubricId ?? '', location: first?.loc ?? '' } })
   }
   const text = viewText(await report(h, after, lint.plan, held.base, ran)), written = visibleText(text.text)
   await h.io.write(`${r.root}/${VERIFY_FILE}`, written)
   if (text.leak) return block({ reason: 'publish', vars: { detail: VERIFY_FILE } })
   const hash = await sha256(written)
-  settled(await updateRecord(h.io, h.home, r.flowId, h.sessionId, x => ({ ...x, verifiedTree: now, verifyMdHash: hash, ...pointerFields(afterPass({ phase: 'verify', task: 'V8' }, { features: [], baselineRed: false })) })))
+  const verified = settled(await updateRecord(h.io, h.home, r.flowId, h.sessionId, x => ({ ...x, verifiedTree: now, verifyMdHash: hash, ...pointerFields(afterPass({ phase: 'verify', task: 'V8' }, { features: [], baselineRed: false })) })))
+  await keepTrees(h.io, p, r.flowId, neededTrees(verified)) // A1: the verified and last-seal trees, which the release echo reads
 }

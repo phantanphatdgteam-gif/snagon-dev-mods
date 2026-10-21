@@ -24,6 +24,14 @@ describe('flow-cmd: parsing, origin and the lock', () => {
     expect((await run(world(), 'flow-off nope')).text).toBe('Usage: /flow-off [<id8>]')
   })
 
+  test('/flow-setup stack=<id> reaches S1: a project with two stacks is refused until one is picked (AC-STK-15)', async () => {
+    const files = { [`${ROOT}/package.json`]: '{"scripts":{"test":"vitest run"}}', [`${ROOT}/pyproject.toml`]: '[project]\nname = "x"\n' }
+    expect((await run(world({ flow: false, files }), 'flow-setup')).text).toContain('several stacks match here (typescript, python)')
+    const picked = (await run(world({ flow: false, files }), 'flow-setup stack=python')).text
+    expect(picked).toContain('flow cannot start here yet:')
+    expect(picked).not.toContain('several stacks')
+  })
+
   test('a command from anywhere but the prompt or the bridge is refused', async () => {
     expect((await run(world(), 'flow-status', { kind: 'sdk' })).text).toContain('count only when the project owner types them')
   })
@@ -77,7 +85,7 @@ describe('flow-cmd: /flow-off', () => {
     rotateCode()
     w.setSession({ ...emptySession(), tickets: { 'T-1': 'x' }, pending: { release: await release() } })
     const out = await run(w, 'flow-off')
-    expect(out.text).toBe(`flow ${FLOW_ID} is off. Its files in .snagon/flow stay as history.\nBefore your next git commit or project script: look at what the flow changed in package.json and the lockfile, reinstall the dependencies from the lockfile (npm: rm -rf node_modules && npm ci), and look at the git hooks; the agent could change files there that git ignores.`)
+    expect(out.text).toBe(`flow ${FLOW_ID} is off. Its files in .snagon/flow stay as history.\nBefore your next git commit or project script: look at what the flow changed in package.json (or pyproject.toml) and the lockfile, reinstall the dependencies from the lockfile (npm: rm -rf node_modules && npm ci; Python: recreate .venv from the lockfile), and look at the git hooks; the agent could change files there that git ignores.`)
     expect(w.files.has(`${flowDir(HOME)}/${FLOW_ID}.end`)).toBe(true)
     expect(w.session().value?.tickets).toEqual({})
     expect(w.session().value?.pending).toEqual({})

@@ -14,6 +14,8 @@ export const TICKET_CAP = { lines: 1500, chars: 60_000 } as const
 export const DEBUG_OUTPUT_LINES = 60
 /** Per line of failing output: 60 × 400 characters stays well under the ticket cap. */
 export const DEBUG_LINE_CHARS = 400
+/** The most characters of the owner's `/flow-allow red` reason a ticket quotes (the record and the echo keep it whole). */
+export const RED_REASON_CHARS = 2000
 const END = 'REVIEW-END'
 
 const hex = (bytes: Uint8Array): string => [...bytes].map(b => b.toString(16).padStart(2, '0')).join('')
@@ -117,12 +119,16 @@ export function fixTicketText(t: FixTicket): string | null {
   ])
 }
 
-export type DebugTicket = Common & Method & { failing: string; pack: string }
-/** §4.7: the failing output (redacted before the cut, then its first 60 lines, fenced), the feature pack (built
- * redacted, flow-pack.ts) and the debugging method; five answer fields. */
+/** command: the id of the red approved command, whose output `failing` is (it routed the ticket, R2 plan §4.4). */
+export type DebugTicket = Common & Method & { command: string; failing: string; pack: string; redAllow?: { files: readonly string[]; reason: string } }
+/** §4.7: the red command and its failing output (redacted before the cut, then its first 60 lines, fenced), the feature
+ * pack (built redacted, flow-pack.ts) and the debugging method; five answer fields. `redAllow` (/flow-allow red): the one
+ * ticket that may edit the feature's RED test files, to fix a defect in the test itself; every other RED rule stays. */
 export function debugTicketText(t: DebugTicket): string | null {
   return ticket(t, [
-    `## DEBUG ${t.f}`, `A test fails. The output (first ${DEBUG_OUTPUT_LINES} lines):`, fenceUntrusted(redactSecrets(t.failing).split('\n').slice(0, DEBUG_OUTPUT_LINES).map(l => (l.length > DEBUG_LINE_CHARS ? `${l.slice(0, DEBUG_LINE_CHARS)} …[cut]` : l)).join('\n'), 'failing-output', t.fenceNonce ?? t.nonce),
+    `## DEBUG ${t.f}`, `The approved command ${t.command} fails. The output (first ${DEBUG_OUTPUT_LINES} lines):`, fenceUntrusted(redactSecrets(t.failing).split('\n').slice(0, DEBUG_OUTPUT_LINES).map(l => (l.length > DEBUG_LINE_CHARS ? `${l.slice(0, DEBUG_LINE_CHARS)} …[cut]` : l)).join('\n'), 'failing-output', t.fenceNonce ?? t.nonce),
+    ...(t.redAllow ? [`## RED TEST FIX ALLOWED`, `The project owner allows this ticket to edit the RED test file(s) of ${t.f}: ${t.redAllow.files.join(', ')}, only to fix a defect in the test itself. The owner's reason:`, fenceUntrusted(t.redAllow.reason.length > RED_REASON_CHARS ? `${t.redAllow.reason.slice(0, RED_REASON_CHARS)} …[cut: the full reason is in the flow record]` : t.redAllow.reason, 'owner-reason', t.fenceNonce ?? t.nonce),
+      'Keep each test\'s intent and its acceptance criterion id in the title. All other RED rules stay: delete no RED test, weaken no assertion, mock or patch nothing the tests exercise. The change comes back to the owner as a red-test-changed finding.'] : []),
     '## PACK', t.pack, ...methodPart(t.method), '## ANSWER', 'Answer with these five lines:', 'REPRODUCE: <command id> [filter <test name>]', 'LOCALIZE: <path:line>',
     'HYPOTHESIS: <one sentence>', 'FIX: <path>:<start>-<end>', 'GUARD: <the test that fails before the fix and passes after it>',
   ])
@@ -154,21 +160,23 @@ export function authorTicketText(t: AuthorTicket): string | null {
   ])
 }
 
-const PLAN_FORMAT = [
+/** The plan file's format; `exampleFiles`: the example feature's Files line in the flow stack's paths. */
+const planFormat = (exampleFiles: string): string[] => [
   '## Acceptance', '- AC-001 (Required): <what must be true>. Verification: <the test that shows it>', '- AC-002 (Optional): <…>. Verification: <…>',
-  '## Features', '### F-01: <title>', '- ACs: AC-001, AC-002', '- Files: src/a.ts, tests/a.test.ts (new)', '- Security: yes|no',
+  '## Features', '### F-01: <title>', '- ACs: AC-001, AC-002', `- Files: ${exampleFiles}`, '- Security: yes|no',
 ]
-export type PlanTicket = Common & Method & { intent: string; issues: readonly string[] }
+export type PlanTicket = Common & Method & { intent: string; issues: readonly string[]; exampleFiles: string; planRule?: string }
 /** §3 P1: what the owner asked for, the plan file's exact format and rules, the issues of the last lint, the method. */
 export function planTicketText(t: PlanTicket): string | null {
   return ticket(t, [
     '## PLAN', 'You plan the work the project owner asks for as numbered features that flow builds one at a time, each test first.',
     'The project owner asks for:', redactSecrets(t.intent),
     "Read the project's CLAUDE.md and its rules first. Then write the plan to docs/flow/plan.md (create the folder if it is missing) and change no other file. The file holds exactly this format and nothing else:",
-    ...PLAN_FORMAT,
+    ...planFormat(t.exampleFiles),
     // dry run of step 13, D7: RED needs a failing new test per criterion (§3.3), which "the old behaviour stays" cannot give
     'Every acceptance criterion is new behaviour that a new test can fail on before the feature exists; keeping existing behaviour or tests green is part of the definition of done, never a criterion.',
     'Rules: features are numbered F-01, F-02, … in order, at most 50; every Required criterion is covered by a feature; every feature lists at least one test file; files are paths inside the project, never under .snagon, .git, .claude or another protected folder, and a file that does not exist yet ends with " (new)"; no TBD, TODO or "later".',
+    ...(t.planRule ? [t.planRule] : []),
     ...(t.issues.length ? ['## LINT', 'The last plan had these problems; fix every one:', ...t.issues.map(i => `- ${i}`)] : []),
     ...methodPart(t.method),
     '## ANSWER', 'Answer with one short paragraph on what the plan covers.',

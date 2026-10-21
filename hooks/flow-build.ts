@@ -3,15 +3,13 @@
 // and issues the author ticket; an attested author run hands the feature to the judge (B3). Tickets carry the feature
 // pack, sized to the room their frame leaves; a feature that does not fit one ticket is blocked as split.
 import { fill } from '../flow/data/templates'
-import { TYPESCRIPT } from '../flow/data/stacks'
 import { CAPS, RETRY } from '../flow/data/phases'
 import { DOD } from '../flow/data/dod'
 import type { CapScope } from '../flow/data/types'
 import { failures, type Report, type Signature } from '../flow/parse'
-import { git, flowTree, gitPaths, type GitPaths } from './flow-git'
+import { blobsAt, git, flowTree, gitPaths, type GitPaths } from './flow-git'
 import { parseDiff, SCAN_DIFF_ARGS, type DiffFile } from './flow-scan'
-import { outOfScope, redCheck, reportSignatures, symbolAbsent, timeoutFor, MAX_RUN_MS } from './flow-judge'
-import { redShape } from './flow-red'
+import { anyInTree, outOfScope, redCheck, reportSignatures, symbolAbsent, timeoutFor, MAX_RUN_MS } from './flow-judge'
 import { globRe, type FeatureRow, type Plan } from './flow-plan'
 import { featurePack, roomLeft } from './flow-pack'
 import { authorTicketText, changedHunks, newNonce, redTicketText, sha256 } from './flow-review'
@@ -21,16 +19,15 @@ import { activeView, blockFlow, dropView, session, type FlowHost } from './flow-
 import { flowDir, updateRecord, type Blocked, type FlowRecord, type TicketKind, type UpdateResult } from './flow-state'
 import { issueTicket, lostReissue } from './flow-ticket'
 import { methodText } from './flow-method'
-import { costBlock } from './flow-spend'
 import { lintNow, PLAN_FILE } from './flow-planning'
 import { frozenBaseline } from './flow-baseline'
-import { judgedRun } from './flow-run'
+import { judgedBlock, judgedRun } from './flow-run'
 import { flowCard } from './flow-turn'
+import { stackOf } from './stacks/index'
 
 export const redFile = (home: string, flowId: string): string => `${flowDir(home)}/${flowId}.red.json`
 const FLOW_RULES = ['Definition of Done for this task:', ...DOD.filter(d => d.level === 'task').map(d => `- ${d.text}`)].join('\n')
 const START_PROMPT = 'flow: a ticket is ready. Call flow_status and start the agent exactly as it says.'
-const TESTS = TYPESCRIPT.testFiles.map(globRe)
 const settled = (out: UpdateResult): FlowRecord => { dropView(); if (!out.ok) throw new Error(`flow: the record could not be written (${out.reason})`); return out.record }
 const isBlocked = (x: unknown): x is Blocked => typeof x === 'object' && x !== null && 'reason' in x && 'vars' in x
 
@@ -45,8 +42,8 @@ export async function featureNow(h: FlowHost, r: FlowRecord): Promise<FeatureNow
   const p = await gitPaths(h.io, r.root), now = await flowTree(h.io, p, 'worktree', newNonce()), start = r.frozen[`start:${f.id}`] ?? now
   const d = start === now ? null : await git(h.io, p.top, [...SCAN_DIFF_ARGS, start, now])
   if (d && (d.exitCode !== 0 || d.isStdoutTruncated)) throw new Error(`flow: git diff failed: ${d.stderr.trim().slice(0, 200)}`)
-  const paths = f.files.map(x => x.path)
-  return { plan: lint.plan, f, key, p, start, now, diffText: d?.stdout ?? '', files: parseDiff(d?.stdout ?? ''), tests: paths.filter(x => TESTS.some(t => t.test(x))), fresh: f.files.filter(x => x.isNew).map(x => x.path) }
+  const paths = f.files.map(x => x.path), tests = stackOf(r).data.testFiles.map(globRe)
+  return { plan: lint.plan, f, key, p, start, now, diffText: d?.stdout ?? '', files: parseDiff(d?.stdout ?? ''), tests: paths.filter(x => tests.some(t => t.test(x))), fresh: f.files.filter(x => x.isNew).map(x => x.path) }
 }
 
 /** F45: the feature pack sized to the room the ticket's frame leaves; null frame or a split pack blocks the feature. */
@@ -54,11 +51,11 @@ async function packed(h: FlowHost, r: FlowRecord, fn: FeatureNow, frame: string 
   const split: Blocked = { reason: 'split', vars: { id: fn.f.id } }
   if (frame === null) return split
   const files = (await Promise.all(fn.f.files.map(async x => ({ path: x.path, text: await h.io.read(`${r.root}/${x.path}`).catch(() => null) })))).flatMap(x => (x.text === null ? [] : [{ path: x.path, text: x.text }]))
-  const pack = featurePack({ f: fn.f.id, plan: fn.plan, flowRules: FLOW_RULES, stack: TYPESCRIPT.id, rules: await loadRules(h.io), files, hunks: changedHunks(fn.files) }, roomLeft(frame))
+  const pack = featurePack({ f: fn.f.id, plan: fn.plan, flowRules: FLOW_RULES, stack: stackOf(r).data.id, rules: await loadRules(h.io), files, hunks: changedHunks(fn.files) }, roomLeft(frame))
   return pack.ok ? pack.text : split
 }
 /** A ticket for the feature with its pack (the frame built with an empty pack and a nonce of the same length). */
-export async function featureTicket(h: FlowHost, r: FlowRecord, fn: FeatureNow, o: { role: 'red' | 'author' | 'debugger'; kind: TicketKind; build: (nonce: string, pack: string) => string | null; also?: (x: FlowRecord) => FlowRecord }): Promise<Blocked | null> {
+export async function featureTicket(h: FlowHost, r: FlowRecord, fn: FeatureNow, o: { role: 'red' | 'author' | 'debugger' | 'buildFixer'; kind: TicketKind; build: (nonce: string, pack: string) => string | null; also?: (x: FlowRecord) => FlowRecord }): Promise<Blocked | null> {
   const pack = await packed(h, r, fn, o.build('0'.repeat(16), ''))
   if (isBlocked(pack)) return pack
   const id = await issueTicket(h, r, { role: o.role, f: fn.f.id, kind: o.kind, build: nonce => o.build(nonce, pack), ...(o.also ? { also: o.also } : {}) })
@@ -85,7 +82,7 @@ async function redTicket(h: FlowHost, r: FlowRecord, fn: FeatureNow, problems: r
   if (!round.ok) return block(h, r, round.blocked)
   const startKey = `start:${fn.f.id}`
   const also = (x: FlowRecord): FlowRecord => { const { awaiting: _a, ...rest } = round.also(x); return { ...rest, task: 'B1', frozen: { ...x.frozen, [startKey]: x.frozen[startKey] ?? fn.now } } }
-  const pluginProject = r.setup?.pluginProject ?? false, method = await methodText(h.io, 'red')
+  const pluginProject = r.setup?.pluginProject ?? false, method = await methodText(h.io, 'red', stackOf(r).data.redTesting)
   const why = await featureTicket(h, r, fn, { role: 'red', kind: 'red', build: (nonce, pack) => redTicketText({ f: fn.f.id, nonce, pluginProject, pack, problems, method }), also })
   if (why) await block(h, r, why)
 }
@@ -102,7 +99,7 @@ export async function buildCommand(h: FlowHost): Promise<string> {
   const view = await activeView(h)
   if (view.mode !== 'on') return fill(h.language, 'status.none', { address: h.address })
   const r = view.record
-  if (r.task !== 'B1' || r.awaiting !== '/flow-build' || (await costBlock(h, r))) return (await flowCard(h)) ?? ''
+  if (r.task !== 'B1' || r.awaiting !== '/flow-build') return (await flowCard(h)) ?? ''
   const fn = await featureNow(h, r)
   if (isBlocked(fn)) { await block(h, r, fn); return (await flowCard(h)) ?? '' }
   await redTicket(h, r, fn, [])
@@ -114,13 +111,13 @@ export async function buildCommand(h: FlowHost): Promise<string> {
 async function judgeAll(h: FlowHost, r: FlowRecord): Promise<{ sigs: Signature[]; report?: Report } | Blocked | null> {
   const held = await frozenBaseline(h, r)
   if (!held) return null
-  const sigs: Signature[] = []
+  const sigs: Signature[] = [], stack = stackOf(r).data
   let report: Report | undefined
   for (const cmd of r.setup?.commands ?? []) {
     const ms = held.base.commands[cmd.id]?.ms
     const out = await judgedRun(h, r, cmd, ms === undefined ? MAX_RUN_MS : timeoutFor(ms))
-    if (!out.ok) return out.reason === 'tooSlow' ? { reason: 'tooSlow', vars: { command: cmd.id, limit: 'its time limit' } } : { reason: 'couldNotRun', vars: { detail: `${cmd.id}: ${out.detail}` } }
-    sigs.push(...(out.report ? reportSignatures(out.report, cmd.runner) : failures(out.run.output, TYPESCRIPT, cmd.runner) ?? []))
+    if (!out.ok) return judgedBlock(cmd, out)
+    sigs.push(...(out.report ? reportSignatures(out.report, cmd.runner) : failures(out.run.output, stack, cmd.runner) ?? []))
     report ??= out.report ?? undefined
   }
   if (!(await frozenBaseline(h, r))) return null
@@ -140,11 +137,16 @@ export async function redStep(h: FlowHost, r: FlowRecord): Promise<void> {
   if (judged === null) return
   if (isBlocked(judged)) return block(h, r, judged)
   const scope = outOfScope(fn.files, [...fn.tests, ...fn.fresh]).map(x => `changed outside the RED scope (the feature's test files and new stubs): ${x}`)
-  const red = await redCheck({ files: fn.files, failures: judged.sigs, fTestFiles: fn.tests, fAcs: fn.f.acs, newFiles: fn.fresh, stack: TYPESCRIPT, ...(judged.report ? { report: judged.report } : {}), absentAtStart: (m, name) => symbolAbsent(h.io, fn.p, fn.start, m, name) })
+  const stack = stackOf(r)
+  // the RED tree's test files whole: the RED check reads the added tests from them (a hunk can start inside a string),
+  // and a stack that reads them so freezes the RED shape from them (the check reads the newer tree the same way)
+  const redTexts = await blobsAt(h.io, fn.p, fn.now, fn.tests).catch((err: unknown): Blocked => ({ reason: 'couldNotRun', vars: { detail: `RED: ${err instanceof Error ? err.message : String(err)}` } }))
+  if (isBlocked(redTexts)) return block(h, r, redTexts)
+  const red = await redCheck({ files: fn.files, failures: judged.sigs, fTestFiles: fn.tests, fAcs: fn.f.acs, newFiles: fn.fresh, stack, texts: redTexts, ...(judged.report ? { report: judged.report } : {}), absentAtStart: (m, name) => symbolAbsent(h.io, fn.p, fn.start, stack.code.moduleFiles(m), name), inStart: files => anyInTree(h.io, fn.p, fn.start, files) })
   if (scope.length || !red.ok) return redTicket(h, r, fn, [...scope, ...red.problems])
   // the author's method is read before the RED tests are frozen: a file that cannot be read leaves nothing half done
   const method = await methodText(h.io, 'author')
-  const shapes = redShape(fn.files, fn.tests)
+  const shapes = stack.code.redShape(fn.files, fn.tests, redTexts)
   const old: unknown = JSON.parse(await h.io.read(redFile(h.home, r.flowId)).catch(() => '{}'))
   await h.io.write(redFile(h.home, r.flowId), `${JSON.stringify({ ...(typeof old === 'object' && old !== null ? old : {}), [fn.f.id]: shapes })}\n`)
   const redHash = await sha256(canonical(shapes)), pluginProject = r.setup?.pluginProject ?? false

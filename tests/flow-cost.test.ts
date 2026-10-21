@@ -1,6 +1,5 @@
 import { describe, expect, test } from 'claude-code/testing'
-import { flowCheck } from '../hooks/flow-check'
-import { flowCard, flowStatus } from '../hooks/flow-turn'
+import { flowCard, flowStatus, flowStop, whereNow } from '../hooks/flow-turn'
 import { beat, flowUsageLine, turnEnd } from '../hooks/flow-spend'
 import { dropView } from '../hooks/flow-host'
 import { atB3, editRecord, GREEN_REPORT, HEAD, lastTicket, latest, run, toB1, world, type DriveOpts } from './flow-drive'
@@ -48,65 +47,53 @@ describe('flow spend and heartbeat at the end of each main turn (plan §6, line 
     expect(latest(w)?.lock?.heartbeatAt).toBe(T0 + 6 * MIN)
   })
 
-  test('the usage line names both caps and the phase spend', async () => {
+  test('the usage line shows the session, flow and phase spend, with no cap and no notice', async () => {
     const { w } = await atB3()
     await turnEnd(w.host)
     w.setUsd(4)
     await turnEnd(w.host)
-    // one planned feature: flow cap (2 × 1 + 1.2) × 1.5 → $5; build's notice 2 × 1 × 1.2 (plan §9, step 13)
-    expect(await flowUsageLine(w.host)).toBe('flow: session $4.00 / cap $15.00; flow $3.00 / cap $5.00; phase build $3.00 (notice at $2.40)')
+    expect(await flowUsageLine(w.host)).toBe('flow: session $4.00; flow $3.00; phase build $3.00')
   })
 })
 
-describe('flow cost caps (plan §3.2 cost, §6 usage)', () => {
-  test('at the flow cap: blocked for the owner at once, no ticket; /flow-retry cost raises the cap by half, once', async () => {
+describe('no cost caps (owner decision 2026-10-20): spend is measured and shown only', () => {
+  test('a flow far past the old caps (flow $100, session $100) is not blocked; the card shows the spend with no cap', async () => {
     const { w } = await atB3()
-    editRecord(w, r => ({ ...r, flowCap: 60 })) // the cap of a larger plan, so the retry below unblocks the $65 spent
-    // five sessions of $13 each (a session stops at its own $15 cap); the fifth reaches the flow cap within 5 minutes of
-    // the last write, so only the cap makes it write at once
-    for (let i = 1; i <= 5; i += 1) {
-      const s = w.session().value
-      if (s) w.setSession({ ...s, spend: null })
-      w.setUsd(1)
-      await turnEnd(w.host)
-      w.setUsd(14)
-      w.setNow(T0 + Math.min(i, 4) * 5 * MIN)
-      await turnEnd(w.host)
-    }
-    expect(latest(w)?.spent).toBe(65)
-    expect(JSON.parse(await flowStatus(w.host)).next).toContain('Blocked, NOT done: cost')
-    expect(await flowCard(w.host)).toContain('the flow cost cap of $60.00 was reached')
-    const tickets = latest(w)?.tickets.length
-    await flowCheck(w.host)
-    expect(latest(w)?.tickets.length).toBe(tickets)
-    expect((await run(w, 'flow-retry cost')).text).toContain('The flow cost cap is now $90.00')
-    expect(latest(w)?.flowCap).toBe(90)
+    editRecord(w, r => ({ ...r, spent: 100, flowCap: 5 })) // an older record may still hold flowCap: it is not read
+    w.setUsd(100)
+    const r = latest(w), s = w.session().value
+    if (!r || !s) throw new Error('no record or session')
+    expect((await whereNow(w.host, r, s)).kind).not.toBe('blocked')
     expect(JSON.parse(await flowStatus(w.host)).next).not.toContain('Blocked')
-    for (let i = 6; i <= 8; i += 1) {
-      const s = w.session().value
-      if (s) w.setSession({ ...s, spend: null })
-      w.setUsd(1)
-      await turnEnd(w.host)
-      w.setUsd(14)
-      w.setNow(T0 + i * 5 * MIN)
-      await turnEnd(w.host)
-    }
-    expect(latest(w)?.spent).toBe(104)
-    expect((await run(w, 'flow-retry cost')).text).toContain('cost already had its one retry')
+    const card = await flowCard(w.host) ?? ''
+    expect(card).toContain('Cost: session $100.00; flow $100.00')
+    expect(card).not.toMatch(/cap|notice| of \$/i)
+    expect((await flowStop(w.host, { message: 'ok', stopHookActive: false }))?.block).toContain('call flow_status') // the push to go on stays
+    expect(await flowUsageLine(w.host)).toBe('flow: session $100.00; flow $100.00; phase build $0.00')
   })
 
-  test('the session cap stops this session only: /flow-retry cost raises it once here, and a new session starts free', async () => {
+  test('the spend reaches the record when due only: no forced write at the old flow cap', async () => {
     const { w } = await atB3()
-    w.setUsd(16)
-    expect(await flowCard(w.host)).toContain('the session cost cap of $15.00 was reached')
-    expect((await run(w, 'flow-retry cost')).text).toContain('The session cost cap is now $22.50')
-    expect(JSON.parse(await flowStatus(w.host)).next).not.toContain('Blocked')
-    w.setUsd(23)
-    expect((await run(w, 'flow-retry cost')).text).toContain('cost already had its one retry')
-    const s = w.session().value
-    if (s) w.setSession({ ...s, spend: null, costBoost: false })
-    w.setUsd(1)
-    expect(JSON.parse(await flowStatus(w.host)).next).not.toContain('Blocked')
+    await turnEnd(w.host)
+    w.setUsd(200)
+    await turnEnd(w.host)
+    expect(latest(w)?.spent ?? 0).toBe(0)
+    expect(w.session().value?.spend).toMatchObject({ seen: 200, pending: 199 })
+  })
+
+  test('/flow-retry cost answers "nothing waits": no counter marked retried, no block released, nothing submitted', async () => {
+    const { w } = await atB3()
+    const counters = latest(w)?.counters, sent = w.submitted.length // (an owner command may take the lock: the record version moves, the rest does not)
+    expect((await run(w, 'flow-retry cost')).text).toBe('Nothing waits for /flow-retry cost now.')
+    expect(latest(w)?.counters).toEqual(counters)
+    expect(latest(w)?.counters.cost).toBeUndefined()
+    expect(w.submitted.length).toBe(sent)
+    // an older record that stored the `cost` block is let go (it could never clear otherwise), with no counter marked
+    editRecord(w, r => ({ ...r, blocked: { reason: 'cost', vars: { kind: 'flow', cap: '5.00' } } }))
+    expect((await run(w, 'flow-retry cost')).text).toBe('There is no cost cap any more; the old cost block is let go.')
+    expect(latest(w)?.blocked ?? null).toBeNull()
+    expect(latest(w)?.counters).toEqual(counters)
+    expect(w.submitted.length).toBe(sent + 1)
   })
 
   test('a session that does not hold the lock spends nothing on the flow', async () => {
@@ -127,27 +114,30 @@ describe('flow cost caps (plan §3.2 cost, §6 usage)', () => {
     expect(w.session().value?.spend?.pending).toBe(1)
   })
 
-  test('a spend that cannot be read counts as the cap reached', async () => {
+  test('a spend that cannot be read shows as ? on the card and the status line (not $0.00) and blocks nothing', async () => {
     const { w } = await atB3()
     w.setUsd(undefined)
-    expect(await flowCard(w.host)).toContain('the session cost cap of $15.00 was reached')
+    expect(await flowCard(w.host)).toContain('Cost: session $?;')
+    expect(await flowUsageLine(w.host)).toMatch(/^flow: session \$\?; flow \$\d+\.\d\d; phase build \$\d+\.\d\d$/)
+    expect(JSON.parse(await flowStatus(w.host)).next).not.toContain('Blocked')
   })
 
-  test('/flow-build at a cap starts no feature', async () => {
+  test('/flow-build at B1 with the spend far past the old caps still starts the feature', async () => {
     const d: DriveOpts = { gitOut: { ...HEAD }, judge: { test: { exit: 0, report: GREEN_REPORT } } }
     const w = world(d)
     await toB1(w)
     const before = lastTicket(w)?.id
-    w.setUsd(16)
+    editRecord(w, r => ({ ...r, spent: 100 }))
+    w.setUsd(100)
     await run(w, 'flow-build')
-    expect(lastTicket(w)?.id).toBe(before)
+    expect(lastTicket(w)?.id).not.toBe(before)
   })
 })
 
 describe('flow card: the runner line (F30)', () => {
   test('a runner whose code was not found at setup is named on the card', async () => {
     const { w } = await atB3()
-    expect(latest(w)?.frozen.runner).toBe('absent')
+    expect(latest(w)?.frozen['runner:v2']).toBe('absent')
     expect(await flowCard(w.host)).toContain('The test runner\'s code is not pinned')
   })
 })

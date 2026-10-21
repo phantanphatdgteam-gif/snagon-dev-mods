@@ -177,6 +177,26 @@ try {
   const quoted = await publishReason(G.hardenedRead(io, A), ['HEAD', '--not', sh(R, 'rev-parse', 'main')])
   check('a private file whose path git would quote is still named', quoted !== null && /private path: we"ird\/\.env/.test(quoted), String(quoted))
   sh(A, 'reset', '-q', '--hard', sh(R, 'rev-parse', 'main'))
+  // M-10 (535 trial): a .pem of certificates alone is released; a key in it, now or earlier in the range, is not
+  const certPem = ['-----BEGIN CERTIFICATE-----', 'MIIB'.repeat(16), 'AA==', '-----END CERTIFICATE-----', ''].join('\n')
+  const keyPem = ['-----BEGIN EC ' + 'PRIVATE KEY-----', 'MHcC'.repeat(16), '-----END EC ' + 'PRIVATE KEY-----', ''].join('\n')
+  put(join(A, 'tests/fixtures/ca.pem'), certPem); sh(A, 'add', '-A'); sh(A, 'commit', '-q', '-m', 'ca')
+  const ca = await G.release(io, A, P, HOME, frozen, false)
+  check('a .pem of certificates alone is released (M-10)', ca.ok === true, JSON.stringify(ca).slice(0, 300))
+  put(join(A, 'tests/fixtures/ca.pem'), certPem + keyPem); sh(A, 'commit', '-q', '-am', 'ca and key')
+  const both = await G.release(io, A, P, HOME, frozen, false)
+  check('a .pem that also holds a private key is refused (M-10)', !both.ok && both.reason === 'publish' && /private path: tests\/fixtures\/ca\.pem/.test(both.detail), JSON.stringify(both).slice(0, 300))
+  put(join(A, 'tests/fixtures/ca.pem'), certPem); sh(A, 'commit', '-q', '-am', 'ca again')
+  const earlier = await G.release(io, A, P, HOME, frozen, false)
+  check('a key earlier in the range is refused though HEAD holds certificates alone (M-10)', !earlier.ok && earlier.reason === 'publish' && /tests\/fixtures\/ca\.pem/.test(earlier.detail), JSON.stringify(earlier).slice(0, 300))
+  sh(A, 'reset', '-q', '--hard', sh(R, 'rev-parse', 'main'))
+  // security review of M-10: a repository diff prefix and a name with a space do not hide what the range added
+  sh(A, 'config', 'diff.dstPrefix', 'z/')
+  put(join(A, 'tests/fixtures/my ca.pem'), 'db_password=hunter2-prod\n'); sh(A, 'add', '-A'); sh(A, 'commit', '-q', '-m', 'leak')
+  put(join(A, 'tests/fixtures/my ca.pem'), certPem); sh(A, 'commit', '-q', '-am', 'cert')
+  const spaced = await publishReason(G.hardenedRead(io, A), ['HEAD', '--not', sh(R, 'rev-parse', 'main')], { headTree: true })
+  check('text added earlier in the range is read under a repo diff prefix and a name with a space (M-10 review)', spaced !== null && /private path: tests\/fixtures\/my ca\.pem/.test(spaced), String(spaced))
+  sh(A, 'config', '--unset', 'diff.dstPrefix'); sh(A, 'reset', '-q', '--hard', sh(R, 'rev-parse', 'main'))
 
   frozen = await freeze()
   writeFileSync(process.env.GIT_CONFIG_GLOBAL, readFileSync(process.env.GIT_CONFIG_GLOBAL, 'utf8') + '[url "https://example.invalid/"]\n\tinsteadOf = origin-alias:\n')
@@ -215,7 +235,7 @@ try {
     const tmp = realpathSync(process.env.TMPDIR || '/tmp')
     const emptyConfig = join(dirname(fileURLToPath(import.meta.url)), '../flow/empty.npmrc')
     const profileOf = ports => S.judgeProfile({ root: A, tmpDir: tmp, commonDir: P.commonDir, denyRead: [join(HOME)], loopbackPorts: ports })
-    const judgeWith = (profile, argv) => { const a = S.judgeArgv(profile, argv, { PATH: process.env.PATH, HOME, TMPDIR: tmp, emptyConfig }); return spawnSync(a[0], a.slice(1), { cwd: A, encoding: 'utf8', timeout: 60000 }) }
+    const judgeWith = (profile, argv) => { const a = S.judgeArgv(profile, argv, { PATH: process.env.PATH, HOME, TMPDIR: tmp, stack: ['npm_config_userconfig=/dev/null', `npm_config_globalconfig=${emptyConfig}`] }); return spawnSync(a[0], a.slice(1), { cwd: A, encoding: 'utf8', timeout: 60000 }) }
     const judge = (...argv) => judgeWith(profileOf([]), argv)
     const npm = judge('npm', 'config', 'get', 'registry')
     check('judge: npm runs with the shipped empty global config', npm.status === 0, npm.stderr.slice(0, 200))
@@ -233,13 +253,18 @@ try {
     const wrote = Object.entries(writes).filter(([, c]) => judge('/bin/sh', '-c', c).status === 0).map(([k]) => k)
     if (existsSync(outside)) rmSync(outside)
     check('judge: .git/config, .claude/ and the home folder are not writable', wrote.length === 0, wrote.join(', '))
-    // macOS already refuses a link to a file the profile does not let the process write; (deny file-link) refuses the rest (NK-03)
-    const control = judgeWith(profileOf([]).replace('(deny file-link)\n', ''), ['/bin/sh', '-c', 'ln src/judged.txt hl-ctl'])
-    check('control: without (deny file-link) a file in the root can be hard-linked', control.status === 0, control.stderr)
+    // Q-3a narrow rule: os.link works inside the tree and the run folder (the project's own, e.g. 535 ingest); a link
+    // whose source the run may not write (a protected path, a file outside the root) is refused by macOS itself, which
+    // the control shows holds even with no file-link rule at all (NK-03).
+    put(join(A, '.claude/settings.json'), '{}')
+    check('judge: a hard link to a writable file inside the root is allowed', judge('/bin/sh', '-c', 'ln src/judged.txt hl-in').status === 0 && existsSync(join(A, 'hl-in')))
+    check('judge: a hard link inside the run folder is allowed', judge('/bin/sh', '-c', 'd="$TMPDIR/reaplink.$$"; mkdir -p "$d" && echo z > "$d/src" && ln "$d/src" "$d/hl"').status === 0)
     const self = fileURLToPath(import.meta.url) // outside the root and the temp folder
-    const links = { '.git/config': 'ln .git/config hl-cfg', 'a file outside the root': `ln ${JSON.stringify(self)} hl-out`, 'a file in the root': 'ln src/judged.txt hl-in' }
+    const links = { 'a protected file (.git/config)': 'ln .git/config hl-cfg', 'a protected dir (.claude)': 'ln .claude/settings.json hl-cl', 'a file outside the root': `ln ${JSON.stringify(self)} hl-out` }
     const made = Object.entries(links).filter(([, c]) => judge('/bin/sh', '-c', c).status === 0).map(([k]) => k)
-    check('judge: no hard link can be made, to a protected file, a file outside the root or one in it', made.length === 0, made.join(', '))
+    check('judge: no hard link can be made from a protected file or one outside the root', made.length === 0, made.join(', '))
+    const noRule = judgeWith(profileOf([]).replace(/\(deny file-link\)[^\n]*\n/, ''), ['/bin/sh', '-c', 'ln .git/config hl-cfg2'])
+    check('control: even with no file-link rule, macOS refuses a link to a file the run may not write', noRule.status !== 0, noRule.stderr.slice(0, 200))
     check('judge: a non-loopback connection is refused', judge('/usr/bin/curl', '-s', '-m', '5', 'https://example.com').status !== 0)
     const unix = judge(process.execPath, '-e', `require('net').connect(${JSON.stringify(sock)}).on('connect',()=>{console.log('CONNECTED');process.exit(0)}).on('error',e=>{console.log(e.code);process.exit(3)})`)
     check('judge: a unix socket is refused', unix.status !== 0 && !/CONNECTED/.test(unix.stdout), unix.stdout + unix.stderr)

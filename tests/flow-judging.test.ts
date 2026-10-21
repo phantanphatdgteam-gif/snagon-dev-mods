@@ -1,7 +1,8 @@
 import { describe, expect, test } from 'claude-code/testing'
 import { flowCheck } from '../hooks/flow-check'
 import { SCAN_DIFF_ARGS } from '../hooks/flow-scan'
-import { mergeFindings, requiredIds } from '../hooks/flow-judging'
+import { mergeFindings, requiredIds, unsettled, withSigs } from '../hooks/flow-judging'
+import { hashOf } from '../hooks/session'
 import { redFile } from '../hooks/flow-build'
 import { HOME } from './flow-fakes'
 import { METHOD_HEAD, ROOT } from './flow-fakes'
@@ -25,7 +26,28 @@ describe('flow-judging: B3, the judge', () => {
     expect(text).toContain('F-01: Add numbers')
     expect(text).toContain(`${METHOD_HEAD}\n\n---\nname: debugging-and-error-recovery\n---\nMETHOD debugging-and-error-recovery`)
     expect(text.indexOf(METHOD_HEAD)).toBeGreaterThan(text.indexOf('## PACK'))
+    expect(text).toContain('\nThe approved command test fails. The output (first 60 lines):\n')
     expect(r?.counters[r?.features?.[0]?.key ?? '']?.d).toBe(1)
+  })
+
+  test('a red lint command: the debug ticket goes to the stack\'s build fixer, with its method, and names the command (AC-BF-1)', async () => {
+    const { w } = await atB3({ lint: { exit: 1, out: 'src/add.ts:1:1: Unexpected console statement. [Error/no-console]' } })
+    const r = latest(w), t = lastTicket(w)
+    expect(r).toMatchObject({ task: 'B3', judge: { green: false, f: 'F-01' } })
+    expect(t).toMatchObject({ kind: 'debug', routedType: 'build-error-resolver', model: 'sonnet', used: false })
+    const text = w.session().value?.tickets[t?.id ?? ''] ?? ''
+    expect(text).toContain('\nThe approved command lint fails. The output (first 60 lines):\n')
+    expect(text).toContain('Unexpected console statement.')
+    expect(text).toContain(`${METHOD_HEAD}\n\n---\nname: debugging-and-error-recovery\n---\nMETHOD debugging-and-error-recovery`)
+    expect(r?.counters[r?.features?.[0]?.key ?? '']?.d).toBe(1)
+  })
+
+  test('a red test and a red lint at once: the ticket goes with the first red command in the approved order, whose output it carries (GAP-R2-0.6-84)', async () => {
+    const { w } = await atB3({ exit: 1, out: 'AssertionError: expected 2 to be 3', tests: [OLD, NEW_FAILED], lint: { exit: 1, out: 'src/add.ts:1:1: Unexpected console statement. [Error/no-console]' } })
+    const t = lastTicket(w), text = w.session().value?.tickets[t?.id ?? ''] ?? ''
+    expect(t).toMatchObject({ kind: 'debug', routedType: 'tdd-guide' })
+    expect(text).toContain('\nThe approved command test fails.')
+    expect(text).not.toContain('Unexpected console statement.')
   })
 
   test('debug rounds stop at the cap', async () => {
@@ -50,9 +72,22 @@ describe('flow-judging: B3, the judge', () => {
     expect(judgedRuns(w)).toBeGreaterThan(0)
   })
 
+  test('a junk finding carries the hash of its line in the judged tree, so it is known again when lines move (M-3)', async () => {
+    const src = `${SRC}console.log('here')\n`
+    const { w } = await atB3({ src, git: { [`cat-file blob ${AUTHOR_TREE}:src/add.ts`]: src } })
+    expect(latest(w)?.findings).toEqual([expect.objectContaining({ id: 'J-1', rubricId: 'debug-leftover', sig: hashOf("console.log('here')") })])
+  })
+
   test('a RED test changed by the author is a floor finding', async () => {
     const { w } = await atB3({ test: TEST_FILE.replace('toBe(3)', 'toBe(2)') })
     expect(latest(w)?.blocked).toMatchObject({ reason: 'redTestChanged', vars: { id: 'FL-1', feature: 'F-01', location: 'tests/add.test.ts' } })
+  })
+
+  test('a RED test changed into a trivial assertion names the RED-test block, not the trivial-assert floor (S6 run 2 of 2026-10-20)', async () => {
+    const { w } = await atB3({ test: TEST_FILE.replace('expect(1 + 1).toBe(3)', 'expect(1).toBe(1)') })
+    const r = latest(w)
+    expect(r?.findings.map(x => x.rubricId)).toEqual(expect.arrayContaining(['red-test-changed', 'trivial-assert']))
+    expect(r?.blocked).toMatchObject({ reason: 'redTestChanged', vars: { feature: 'F-01', location: 'tests/add.test.ts' } })
   })
 
   test('fewer tests ran than the baseline plus the new ones is a floor finding; a failing test is not', async () => {
@@ -141,5 +176,57 @@ describe('flow-judging: pure parts', () => {
     expect(out.map(x => [x.id, x.status])).toEqual([['FL-1', 'resolved'], ['J-1', 'waived'], ['FL-2', 'open']])
     const again = mergeFindings(out, 'F-01', [{ kind: 'FL', rule: 'skip-or-only', sev: 'HIGH', loc: 'a:1' }, { kind: 'J', rule: 'debug-leftover', sev: 'HIGH', loc: 'b:2' }])
     expect(again.map(x => [x.id, x.status])).toEqual([['FL-1', 'open'], ['J-1', 'waived'], ['FL-2', 'resolved']])
+  })
+
+  test('a finding whose line moved keeps its id and status at its new line; an edited line is a new finding (535 trial M-3)', () => {
+    const w = { f: 'F-01', rubricId: 'suppression', sev: 'HIGH' as const, status: 'waived' }
+    const old = [{ ...w, id: 'FL-1', loc: 't.py:10', sig: 'S' }, { ...w, id: 'FL-2', loc: 't.py:20', sig: 'S' }]
+    const fl = (loc: string, sig: string) => ({ kind: 'FL' as const, rule: 'suppression', sev: 'HIGH' as const, loc, sig })
+    // three lines added above both, and a third copy of the same line further down: each old finding follows one copy
+    const out = mergeFindings(old, 'F-01', [fl('t.py:13', 'S'), fl('t.py:23', 'S'), fl('t.py:40', 'S')])
+    expect(out.map(x => [x.id, x.loc, x.status])).toEqual([['FL-1', 't.py:13', 'waived'], ['FL-2', 't.py:23', 'waived'], ['FL-3', 't.py:40', 'open']])
+    // the waived line itself edited: the same place with other text is a new finding, never the waived one
+    const edited = mergeFindings(out, 'F-01', [fl('t.py:13', 'T'), fl('t.py:23', 'S'), fl('t.py:40', 'S')])
+    expect(edited.filter(x => x.status === 'open').map(x => [x.id, x.loc])).toEqual([['FL-3', 't.py:40'], ['FL-4', 't.py:13']])
+    // a finding kept from before line hashes (no sig) still matches its place, and takes the line's hash from then on
+    const legacy = mergeFindings([{ ...w, id: 'J-1', rubricId: 'debug-leftover', loc: 'a.py:2' }], 'F-01', [{ kind: 'J', rule: 'debug-leftover', sev: 'HIGH', loc: 'a.py:2', sig: 'U' }])
+    expect(legacy).toEqual([{ ...w, id: 'J-1', rubricId: 'debug-leftover', loc: 'a.py:2', sig: 'U' }])
+  })
+
+  test('withSigs hashes the text of a finding\'s line; verify leaves out junk a feature settled wherever it moved, once per copy (M-3)', () => {
+    const j = (loc: string) => ({ kind: 'J' as const, rule: 'debug-leftover', sev: 'HIGH' as const, loc })
+    const found = withSigs([j('a.py:2'), j('a.py'), j('b.py:1'), j('a.py:4')], { 'a.py': 'x = 1\n  print(x)  \nz = 2\n  print(x)\n' })
+    expect(found.map(x => x.sig)).toEqual([hashOf('  print(x)'), undefined, undefined, hashOf('  print(x)')])
+    // a CRLF file hashes as LF; a line past the end has no hash (and no error)
+    expect(withSigs([j('c.py:1'), j('c.py:9')], { 'c.py': '  print(x)\r\nz = 2\r\n' }).map(x => x.sig)).toEqual([hashOf('  print(x)'), undefined])
+    // F-01 waived the print when it sat at line 9; verify raises only the second copy
+    const settled = [{ id: 'J-1', f: 'F-01', rubricId: 'debug-leftover', sev: 'HIGH' as const, loc: 'a.py:9', status: 'waived', sig: hashOf('  print(x)') }]
+    expect(unsettled(settled, found).map(x => x.loc)).toEqual(['a.py', 'b.py:1', 'a.py:4'])
+  })
+
+  test('deleting a waived copy instead of the open one never clears the open one, in a feature or at verify (M-3 security review)', () => {
+    const p = 'P', j = (loc: string) => ({ kind: 'J' as const, rule: 'debug-leftover', sev: 'HIGH' as const, loc, sig: p })
+    const d = (id: string, f: string, loc: string, status: string) => ({ id, f, rubricId: 'debug-leftover', sev: 'HIGH' as const, loc, status, sig: p })
+    // B3: J-1 waived at line 5, J-2 open at line 20; line 5 is deleted, so the open copy now sits at 19
+    const out = mergeFindings([d('J-1', 'F-01', 'a.py:5', 'waived'), d('J-2', 'F-01', 'a.py:20', 'open')], 'F-01', [j('a.py:19')])
+    expect(out.map(x => [x.id, x.loc, x.status])).toEqual([['J-1', 'a.py:5', 'waived'], ['J-2', 'a.py:19', 'open']])
+    // V4: verify's own open copy claims its line before the copy F-01 settled
+    const settled = [d('J-1', 'F-01', 'a.py:5', 'waived')], own = [d('J-6', 'verify', 'a.py:20', 'open')]
+    expect(unsettled(settled, [j('a.py:19')], own).map(x => x.loc)).toEqual(['a.py:19'])
+    // and the right fix, deleting the open copy, leaves the settled copy at its place settled: nothing is raised
+    expect(unsettled(settled, [j('a.py:5')], own)).toEqual([])
+  })
+
+  test('only a rule whose finding means the line alone follows a moved line, and never across a change of severity (M-3 security review)', () => {
+    // a waived early `return` pasted into another test is a new finding there: its meaning is the test it sits in
+    const ret = mergeFindings([{ id: 'FL-1', f: 'F-01', rubricId: 'conditional-return', sev: 'HIGH', loc: 't.py:10', status: 'waived', sig: 'R' }], 'F-01', [{ kind: 'FL', rule: 'conditional-return', sev: 'HIGH', loc: 't.py:30', sig: 'R' }])
+    expect(ret.map(x => [x.id, x.loc, x.status])).toEqual([['FL-1', 't.py:10', 'waived'], ['FL-2', 't.py:30', 'open']])
+    // the same line found with another severity (a MEDIUM mock-after-red now in the RED test) is a new finding
+    const sev = mergeFindings([{ id: 'FL-1', f: 'F-01', rubricId: 'mock-after-red', sev: 'MEDIUM', loc: 't.py:3', status: 'open', sig: 'M' }], 'F-01', [{ kind: 'FL', rule: 'mock-after-red', sev: 'HIGH', loc: 't.py:3', sig: 'M' }])
+    expect(sev.map(x => [x.id, x.sev, x.status])).toEqual([['FL-1', 'MEDIUM', 'resolved'], ['FL-2', 'HIGH', 'open']])
+    // a HIGH at the place of a MEDIUM that is found again is a new finding of its own, not that one
+    const m = { kind: 'FL' as const, rule: 'mock-after-red', loc: 't.py:3', sig: 'M' }
+    const both = mergeFindings([{ id: 'FL-1', f: 'F-01', rubricId: 'mock-after-red', sev: 'MEDIUM', loc: 't.py:3', status: 'open', sig: 'M' }], 'F-01', [{ ...m, sev: 'MEDIUM' }, { ...m, sev: 'HIGH' }])
+    expect(both.map(x => [x.id, x.sev, x.status])).toEqual([['FL-1', 'MEDIUM', 'open'], ['FL-2', 'HIGH', 'open']])
   })
 })

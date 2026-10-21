@@ -1,10 +1,11 @@
 // The RED freeze (plan v7.1 §3.3): at RED the added test hunks of each F test file are recorded; later, a removed or
 // changed RED line, a line inserted into a RED test, or a mock, spy or patch of imported code added to that file is FL.
-// Adding more tests is fine: a spy inside a new test is only MEDIUM.
-import { hashOf } from './session'
-import { TEST_START, SUITE_START, depth, codeOf } from './flow-js'
-import { resolveSpec, moduleFiles } from './flow-sources'
-import type { DiffFile, RedShape, ScanFinding } from './flow-scan'
+// Adding more tests is fine: a spy inside a new test is only MEDIUM. The TypeScript stack's (hooks/flow-red.ts until
+// R2 step 1, unchanged).
+import { hashOf } from '../session'
+import { TEST_START, SUITE_START, depth, codeOf } from './typescript-lex'
+import { resolveSpec, moduleFiles } from './typescript-sources'
+import type { DiffFile, RedShape, ScanFinding } from '../flow-scan'
 
 export const norm = (t: string): string => t.trim().replace(/\s+/g, ' ')
 /** The test (or suite) blocks in a list of lines, as index ranges: an opener to the line that closes it. */

@@ -11,9 +11,11 @@
 #   keys <session> <key>...      raw tmux key names (Escape, Down, Enter, C-c)
 #   screen <session> [lines]     the screen with that many scrollback lines (default 80)
 #   wait <session> <sec> <ere>   polls the screen for the extended regex; prints the matching line; exit 1 at timeout
-#   busy <session>               exit 0 while a turn runs ("esc to interrupt" on screen), 1 when idle
-#   idle <session> <sec>         waits until no turn runs ("esc to interrupt" gone) for 4 s in a row; exit 1 at timeout
+#   busy <session>               exit 0 while a turn runs (a spinner with its running time, "Nebulizing… (1m 42s)", or
+#                                older builds' "esc to interrupt" on screen), 1 when idle
+#   idle <session> <sec>         waits until no turn runs for 4 s in a row; exit 1 at timeout
 #   stop <session>               /exit, then the session is killed
+#   kill <session>               the session is killed at once (no /exit): a flow left locked, a ticket text lost (H5)
 set -u
 SOCK=flowev
 T() { tmux -L "$SOCK" "$@"; }
@@ -22,7 +24,8 @@ cmd=${1:-}; name=${2:-}; [ -n "$cmd" ] && [ -n "$name" ] || die 'usage: pty-driv
 shift 2
 
 screen() { T capture-pane -p -t "$name" -S "-${1:-80}" 2>/dev/null; }
-busy() { screen 20 | grep -q 'esc to interrupt'; }
+# 2.1.304 draws no "esc to interrupt" while a turn runs: its spinner line carries the running time (535 trial 2, M-7)
+busy() { screen 20 | grep -qE 'esc to interrupt|…[[:space:]]+\([0-9]+[ms]'; }
 wait_re() { # <sec> <ere>: the first screen line matching, or exit 1
   sec=$1; re=$2; i=0
   while [ "$i" -lt "$sec" ]; do
@@ -67,6 +70,8 @@ case "$cmd" in
     done
     echo "pty-drive: still busy after ${sec}s" >&2; exit 1
     ;;
+  # `=name` is tmux's exact match: without it a kill can land on a session whose name only starts the same way
+  kill) T kill-session -t "=$name" 2>/dev/null; T has-session -t "=$name" 2>/dev/null && die "session $name is still there"; exit 0 ;;
   stop)
     if T has-session -t "$name" 2>/dev/null; then
       T send-keys -t "$name" -l -- '/exit'; sleep 0.3; T send-keys -t "$name" Enter; sleep 3

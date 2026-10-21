@@ -31,7 +31,8 @@ export type Task = {
 
 export type Model = 'opus' | 'sonnet' | 'haiku'
 export type Routing = {
-  readonly agents: Readonly<Record<Role, { readonly agent: string; readonly typescript?: string; readonly model: Model }>>
+  /** A stack's own agent for a role, when it has one, is in the stack's data (`routing`). */
+  readonly agents: Readonly<Record<Role, { readonly agent: string; readonly model: Model }>>
   readonly skills: Readonly<Record<Role, readonly string[]>>
   readonly references: Readonly<Record<Role, readonly string[]>>
   /** Loaded first by every agent when the project is a Claude Code plugin or mod (owner rule, 2026-10-12). */
@@ -58,16 +59,42 @@ export type FailurePattern = {
 }
 export type PackageManager = { readonly id: string; readonly lockfiles: readonly string[]; readonly domains: readonly string[]; readonly cacheDirs: readonly string[] }
 
+/** A stack's data (R2 plan §3.1): no functions; the code that reads a stack's files and output is hooks/stacks/<id>.ts. */
 export type Stack = {
   readonly id: string
   readonly detect: { readonly files: readonly string[] }
-  /** package.json script names tried in order for each command; the owner approves the resolved argv at S2. */
-  readonly scripts: Readonly<Record<'test' | 'typecheck' | 'lint' | 'build', readonly string[]>>
+  /** The project file S1 reads the commands from and S2 freezes by hash (`pkgHash`). */
+  readonly manifest: string
+  /** Script names tried in order for each command (stacks with package scripts); the owner approves the resolved argv at S2. */
+  readonly scripts?: Readonly<Record<'test' | 'typecheck' | 'lint' | 'build', readonly string[]>>
+  /** The runners whose results are tests: they count tests and prove eval ids. */
+  readonly testRunners: readonly string[]
+  /** The package that holds a runner, where its name differs (`tsc` is in `typescript`), for runner integrity. */
+  readonly runnerPackages: Readonly<Record<string, string>>
+  /** Project files that can hold registry credentials (a refusal at S1). */
+  readonly authFiles: readonly string[]
+  /** The files the stack's own reviewer reads best (JS regex source on the path), and the stack's own agent per role: its
+   * reviewer, from STACK_SHARE of the changed lines in those files, and its build fixer, which every red typecheck, build
+   * or lint command goes to (the debugger where the stack has none of its own, GAP-R2-15). */
+  readonly ownsFile: string
+  readonly routing: Readonly<Partial<Record<Role, string>> & { buildFixer: string }>
+  /** B1's testing text (R2 plan §4.4): the sections of a vendored agent-skills reference, or of one of the mod's own
+   * skills, that the stack's RED tickets quote (tests/vendor.check.mjs checks the file and its headings). */
+  readonly redTesting: { readonly from: 'reference' | 'skill'; readonly name: string; readonly sections: readonly string[] }
+  /** The Files line of the plan format's example feature. */
+  readonly exampleFiles: string
+  /** One more rule for the plan ticket ('' for none): the form of a criterion id that a test named in a Verification line
+   * must carry where the RED check reads it (Python: the test's name, never a docstring; live run 2026-10-20). */
+  readonly planRule: string
   /** Anchored on each runner's summary line; group 1 is the number. */
   readonly counters: readonly { readonly runner: string; readonly passed: string; readonly failed: string; readonly skipped: string }[]
   readonly failures: readonly FailurePattern[]
   /** RED: what an assertion failure looks like, and the import errors RED accepts (named groups module, symbol). */
   readonly red: { readonly assertion: readonly string[]; readonly moduleNotFound: readonly string[]; readonly missingExport: readonly string[] }
+  /** How a test's name or title carries an eval id (JS regex sources; group 1 is the id's number): `AC-001`, `ac_001`. */
+  readonly evalIdForms: readonly string[]
+  /** Whether a test id carries its parameter set after the name (`test_x[1-2]`): every set is a row of that test. */
+  readonly paramIds: boolean
   readonly packageManagers: readonly PackageManager[]
   /** Publishing commands denied while flow is active: a tool followed (after options) by one of the subcommands, or a release tool. */
   readonly publish: {
@@ -87,6 +114,9 @@ export type Stack = {
   readonly entrypoints: readonly string[]
   readonly dependencyDirs: readonly string[]
   readonly buildOutputs: readonly string[]
+  /** Ignored files the runner can still load (NK-09, GAP-R2-0.6-11): hashed by content as command sources, outside the
+   * dependency and build-output folders. Globs matched at any depth. */
+  readonly loadable: readonly string[]
   readonly loopbackPorts: readonly number[]
   readonly filterFlag: Readonly<Record<string, string>>
 }

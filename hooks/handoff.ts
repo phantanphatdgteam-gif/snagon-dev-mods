@@ -33,7 +33,7 @@ export const WORKER_SCRIPT = [
   '(',
   '  cd "$root" || exit 1',
   '  if ! command -v claude >/dev/null 2>&1; then echo "$(date "+%F %T") no claude on PATH" >> "$log"; rm -f "$prompt"; exit 1; fi',
-  '  if env -u CLAUDE_CODE_PLUGIN_DIRS SNAGON_WORKER=1 HANDOFF_WORKER=1 claude -p --model sonnet --effort medium --permission-mode dontAsk --tools "" --strict-mcp-config --no-session-persistence --settings "$settings" --max-budget-usd 1 --output-format text < "$prompt" > "$out.tmp" 2>> "$log" && [ -s "$out.tmp" ]; then',
+  '  if env -u CLAUDE_CODE_PLUGIN_DIRS SNAGON_WORKER=1 HANDOFF_WORKER=1 claude -p --model sonnet --effort medium --permission-mode dontAsk --tools "" --strict-mcp-config --no-session-persistence --settings "$settings" --output-format text < "$prompt" > "$out.tmp" 2>> "$log" && [ -s "$out.tmp" ]; then',
   '    mv "$out.tmp" "$out" && echo "$(date "+%F %T") ok $out" >> "$log"',
   '  else',
   '    echo "$(date "+%F %T") failed" >> "$log"; rm -f "$out.tmp"',

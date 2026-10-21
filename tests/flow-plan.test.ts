@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 import { lintPlan, featureKey, carryCounters, LINT_CODES, type LintCtx } from '../hooks/flow-plan'
 import { TEXTS } from '../flow/data/templates'
-import { TYPESCRIPT } from '../flow/data/stacks'
+import { TYPESCRIPT } from '../flow/data/stacks/typescript'
 
 const ROOT = '/Users/u/dev/app'
 const EXISTING = new Set(['src/a.ts', 'tests/a.test.ts', 'src/old.ts', '.env'])

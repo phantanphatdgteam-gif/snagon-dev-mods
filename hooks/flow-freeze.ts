@@ -5,20 +5,18 @@
 import type { FlowSetupArgs } from '../types'
 import { fill } from '../flow/data/templates'
 import { cfgDetail, cfgHash, gitPaths, seenHash } from './flow-git'
+import { refsFrozen, refsNow } from './flow-refs'
 import { pluginIntegrity, pluginVersion } from './flow-judge'
-import { runnerHash } from './flow-sources'
 import { CONTROL_ARGV, effectiveOf, PROBE_COMMAND, probeShowsSandbox, sandboxRefusals, type Layer, type Settings } from './flow-sandbox'
 import { canonical, dropEcho, makeEcho, refusalText, showEcho, type Origin } from './flow-owner'
 import { sha256 } from './flow-review'
 import { activeView, blockFlow, dropView, holderOf, mutateSession, pluginRoots, session, staticsOf, type FlowHost } from './flow-host'
 import { claimLock, createRecord, newRecord, updateRecord, type Approval, type FlowRecord, type FlowSetup, type UpdateResult } from './flow-state'
-import { detectSetup, setupEcho, writeDraftView, LOCAL_SETTINGS, type SetupDraft } from './flow-setup'
+import { detectSetup, outsideCommon, setupEcho, writeDraftView, LOCAL_SETTINGS, type SetupDraft } from './flow-setup'
 
-/** The npm package that holds each runner, for the runner hash. */
-const RUNNER_PACKAGE: Readonly<Record<string, string>> = { tsc: 'typescript' }
 /** Frozen keys that come from the setup: replaced by a re-freeze (the sandbox after the probe). H_cfg is not: it stays as
  * it was until the probe freezes it again, so /flow-off never compares against an empty freeze meanwhile. */
-const SETUP_KEY = /^(?:post|plugin|runner|remote\.|env\.|src:|sandbox$)/
+const SETUP_KEY = /^(?:post|plugin|runner|remote\.|env\.|src:|sandbox$|refs)/
 const LAYERS: readonly Layer[] = ['user', 'project', 'local', 'flag', 'policy']
 
 // Agent-facing prompts (English): what main does next in S2b.
@@ -29,7 +27,6 @@ const CHECK_PROMPT = 'flow: the sandbox is on. Call flow_check now to run the ba
 
 /** The draft whose echo the last recompute built: the approval freezes exactly what it hashed. */
 let approvedDraft: { hash: string; draft: SetupDraft } | null = null
-const unique = (xs: readonly string[]): string[] => [...new Set(xs)]
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 const newFlowId = (): string => [...crypto.getRandomValues(new Uint8Array(4))].map(b => b.toString(16).padStart(2, '0')).join('')
 const settled = (out: UpdateResult): FlowRecord => { dropView(); if (!out.ok) throw new Error(`flow: the record could not be written (${out.reason})`); return out.record }
@@ -57,18 +54,20 @@ export async function setupHash(h: FlowHost): Promise<string | undefined> {
   return hash
 }
 
-/** What S2 freezes besides the setup itself (§2.4): the approved settings (as parsed JSON), the plugin and runner code,
- * the push facts, the judge's PATH and every command source by name. */
+/** What S2 freezes besides the setup itself (§2.4): the approved settings (as parsed JSON), the plugin code, the runner
+ * as S1 hashed it (the approval binds it; `runner:v2`, GAP-R2-0.6-27), the push facts, the judge's PATH and every command
+ * source by name. */
 async function freezeOf(h: FlowHost, d: SetupDraft): Promise<Record<string, string>> {
-  const p = await gitPaths(h.io, d.root)
+  const view = await activeView(h) // a re-freeze leaves out its own kept trees (a new flow has none yet)
   return {
     post: await sha256(canonical(JSON.parse(d.post))),
     plugin: await pluginIntegrity(h.io, h.io.pluginRoot), 'plugin.version': await pluginVersion(h.io, h.io.pluginRoot),
-    runner: await runnerHash(h.io, p.top, unique(d.commands.map(c => RUNNER_PACKAGE[c.runner] ?? c.runner))),
+    'runner:v2': d.runner.hash, 'runner:v2.facts': d.runner.facts, 'runner:v2.load': d.runner.load.join('\n'),
     'remote.url': d.facts.url, 'remote.rules': d.facts.urlRules, 'remote.global': d.facts.globalKeys, 'remote.keys': d.facts.keyNames.join('\n'),
     'env.PATH': d.path || h.env.PATH, // the filtered PATH the owner approved (NK-02)
     cfgSeen: d.cfgSeen, // the H_cfg parts the approval binds; the probe freezes them only if they are still so
     ...Object.fromEntries(Object.entries(d.sources).map(([k, v]) => [`src:${k}`, v])),
+    ...refsFrozen(await refsNow(h.io, await gitPaths(h.io, d.root), d.branch, view.mode === 'on' ? view.record.flowId : null)), // NK-10
   }
 }
 
@@ -80,13 +79,14 @@ async function localHolds(h: FlowHost, root: string, post: string | undefined): 
 /** A new flow, or a re-freeze of this repository's flow: setup and frozen replaced, the approval added, the block cleared,
  * the pointer kept (in setup it goes to S2b). */
 async function saveSetup(h: FlowHost, d: SetupDraft, a: Approval, frozen: Record<string, string>, awaiting: string | undefined): Promise<FlowRecord> {
-  const setup: FlowSetup = { stack: d.stack, commands: d.commands, allowTools: d.allowTools, allowMcp: d.allowMcp, journalDir: d.journalDir, remote: d.remote, branch: d.branch, pluginProject: d.pluginProject, caps: d.caps, sessionCap: d.sessionCap }
+  const setup: FlowSetup = { stack: d.stack, commands: d.commands, allowTools: d.allowTools, allowMcp: d.allowMcp, journalDir: d.journalDir, remote: d.remote, branch: d.branch, pluginProject: d.pluginProject, caps: d.caps }
   const view = await activeView(h), now = await h.io.now(), holder = await holderOf(h)
   if (view.mode === 'unknown') throw new Error(`flow: the flow state cannot be read (${view.why})`)
   if (view.mode === 'on') {
     return settled(await updateRecord(h.io, h.home, view.record.flowId, h.sessionId, r => {
       const { blocked: _b, awaiting: _a, ...rest } = claimLock(holder, now, true)(r)
-      const kept = Object.fromEntries(Object.entries(r.frozen).filter(([k]) => !SETUP_KEY.test(k)))
+      // a re-baseline token the new freeze already covers is used up (AC-RI-3: the hash is taken again once)
+      const kept = Object.fromEntries(Object.entries(r.frozen).filter(([k]) => !SETUP_KEY.test(k)).map(([k, v]) => [k, k.startsWith('dep:') && v === 'yes' ? 'rebased' : v]))
       return { ...rest, setup, frozen: { ...kept, ...frozen }, approvals: [...r.approvals, a], ...(awaiting ? { awaiting } : {}), ...(r.phase === 'setup' ? { task: 'S2b' } : {}) }
     }))
   }
@@ -140,7 +140,7 @@ export async function sandboxProblems(h: FlowHost, r: FlowRecord): Promise<strin
   if ((await sha256(canonical(layers.local))) !== r.frozen.post) out.push('local')
   if (sb.enabled !== true) out.push('sandbox.enabled')
   if (sb.allowUnsandboxedCommands !== false) out.push('sandbox.allowUnsandboxedCommands')
-  const ctx = { home: h.home, root: r.root, protectedPaths: [h.claudeDir, `${h.home}/.snagon`, ...(await pluginRoots(h))], denyRead: [] }
+  const ctx = { home: h.home, root: r.root, protectedPaths: [h.claudeDir, `${h.home}/.snagon`, ...(await pluginRoots(h)), ...outsideCommon(r.root, (await gitPaths(h.io, r.root)).commonDir)], denyRead: [] }
   out.push(...(await sandboxRefusals(layers, ctx)).map(x => `${x.layer}:${x.key}`))
   if (r.frozen.sandbox !== undefined && canonical(effectiveOf(merged)) !== r.frozen.sandbox) out.push('effective')
   return out

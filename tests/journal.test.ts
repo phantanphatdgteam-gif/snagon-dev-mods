@@ -96,6 +96,7 @@ describe('handoff', () => {
     expect(WORKER_SCRIPT).toContain('env -u CLAUDE_CODE_PLUGIN_DIRS SNAGON_WORKER=1 HANDOFF_WORKER=1 claude -p')
     expect(WORKER_SCRIPT).toContain('--no-session-persistence')
     expect(WORKER_SCRIPT).toContain('--permission-mode dontAsk --tools "" --strict-mcp-config')
+    expect(WORKER_SCRIPT).not.toContain('--max-budget-usd') // no cost cap since 2026-10-20 (owner decision)
     expect(planHandoff('- a\n', 2, 1, '', '/d', '2026-10-11', '../../x;rm')?.promptFile).toBe('/d/prompt-xrm.md')
     expect(WORKER_SCRIPT.trimEnd().endsWith(') >/dev/null 2>&1 </dev/null &')).toBe(true)
   })

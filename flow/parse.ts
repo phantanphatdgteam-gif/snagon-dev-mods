@@ -92,16 +92,18 @@ export function redErrors(output: string, stack: Stack): { readonly assertion: b
   return { assertion: stack.red.assertion.some(s => new RegExp(s, 'm').test(text)), modules: all(stack.red.moduleNotFound, 'module'), symbols: all(stack.red.missingExport, 'symbol') }
 }
 
-export type Classified = { kind: 'assertion' } | { kind: 'moduleNotFound'; module: string } | { kind: 'missingExport'; symbol: string } | { kind: 'other' }
-/** One failure message as RED sees it (F20): an assertion, a module not found, a missing export, or anything else. */
+export type Classified = { kind: 'assertion' } | { kind: 'moduleNotFound'; module: string } | { kind: 'missingExport'; symbol: string; module?: string } | { kind: 'other' }
+/** One failure message as RED sees it (F20): an assertion, a module not found, a missing export (with the module, when
+ * the stack's error names it: Python's do), or anything else. */
 export function classify(message: string, stack: Stack): Classified {
   const text = stripAnsi(message)
   if (stack.red.assertion.some(s => new RegExp(s, 'm').test(text))) return { kind: 'assertion' }
   const group = (sources: readonly string[], name: string): string | undefined => sources.map(s => new RegExp(s, 'm').exec(text)?.groups?.[name]).find(Boolean)
   const module = group(stack.red.moduleNotFound, 'module')
   if (module) return { kind: 'moduleNotFound', module }
-  const symbol = group(stack.red.missingExport, 'symbol')
-  return symbol ? { kind: 'missingExport', symbol } : { kind: 'other' }
+  const hit = stack.red.missingExport.map(s => new RegExp(s, 'm').exec(text)?.groups).find(g => g?.symbol)
+  if (!hit?.symbol) return { kind: 'other' }
+  return hit.module ? { kind: 'missingExport', symbol: hit.symbol, module: hit.module } : { kind: 'missingExport', symbol: hit.symbol }
 }
 
 /** Whether changed source text matches a pattern that forces `Security: yes` (plan §3, B3). */

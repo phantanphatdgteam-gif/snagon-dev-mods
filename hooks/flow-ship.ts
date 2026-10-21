@@ -6,6 +6,7 @@
 import { fill } from '../flow/data/templates'
 import { afterPass, pointerFields } from './flow'
 import { flowTree, git, gitPaths, release, type Frozen, type ReleaseResult } from './flow-git'
+import { endTrees, keepTrees, neededTrees, refsBlock, sealedFrom } from './flow-refs'
 import { newNonce, sha256 } from './flow-review'
 import { makeEcho, rotateCode, showEcho, type EchoContent, type Origin } from './flow-owner'
 import { activeView, branchOf, dropView, emptySession, mutateSession, realOf, session, type FlowHost } from './flow-host'
@@ -28,7 +29,12 @@ async function notReady(h: FlowHost, r: FlowRecord): Promise<string | 'commit' |
   const p = await gitPaths(h.io, r.root)
   if ((await flowTree(h.io, p, 'worktree', newNonce())) !== r.verifiedTree) return fill(h.language, 'ship.changed', {})
   if ((await flowTree(h.io, p, 'head', newNonce())) !== r.verifiedTree) return 'commit'
+  // A1: the last seal's and the verified trees (just written again) kept until the end: the echo diffs them, also at
+  // the approval; a lost seal tree is the echo's to say (sealedFrom)
+  await keepTrees(h.io, p, r.flowId, neededTrees(r))
   if ((await sha256(await h.io.read(`${r.root}/${VERIFY_FILE}`).catch(() => ''))) !== r.verifyMdHash) return { reason: 'reportChanged', vars: { file: VERIFY_FILE } }
+  const refs = await refsBlock(h, r) // NK-10
+  if (refs) return refs
   const now = await branchOf(h), branch = branchOfRecord(r)
   return now === branch ? null : fill(h.language, 'ship.branch', { now: now || 'HEAD', branch })
 }
@@ -81,15 +87,15 @@ async function releaseEcho(h: FlowHost, r: FlowRecord, rel: Rel): Promise<EchoCo
   const branch = branchOfRecord(r), url = r.frozen['remote.url'] ?? '', keys = (r.frozen['remote.keys'] ?? '').split('\n').filter(Boolean)
   const count = Number((await gitText(h, r, ['rev-list', '--count', ...rel.revs])).trim()) || 0
   const commits = (await gitText(h, r, ['log', '--no-color', '--format=%h %s', `--max-count=${COMMITS_SHOWN}`, ...rel.revs])).split('\n').filter(Boolean)
-  const sealed = r.seals.at(-1)?.tree, tree = r.verifiedTree ?? ''
-  const unreviewed = sealed && sealed !== tree ? names(await gitText(h, r, ['diff', '--name-only', '-z', sealed, tree])) : []
+  const tree = r.verifiedTree ?? '', since = await sealedFrom(h.io, await gitPaths(h.io, r.root), r) // A1
+  const unreviewed = since ? names(await gitText(h, r, ['diff', '--name-only', '-z', since.from, tree])) : []
   const untracked = names(await gitText(h, r, ['ls-files', '-z', '--others', '--exclude-standard']))
   // the verify report stays in its file, named with its hash (the approval binds it through `files`): an echo that
   // carried the report ran past a 60-row terminal and hid the line to type (dry run of step 13, D10)
   const lines = [
     t('echo.release.head', { head: rel.head.slice(0, 12), branch }), t('echo.release.remote', { url, branch }), t('echo.release.keys', { keys: keys.join(', ') || t('echo.none') }),
     t('echo.release.commits', { count }), ...commits.map(c => `  ${c}`), ...(count > commits.length ? [t('echo.release.more', { n: count - commits.length })] : []),
-    t('echo.release.scan'), t('echo.release.unreviewed', { files: list(unreviewed) }), t('echo.release.untracked', { files: list(untracked) }),
+    t('echo.release.scan'), t('echo.release.unreviewed', { files: list(unreviewed) }), ...(since?.lost ? [t('echo.release.sealedLost')] : []), t('echo.release.untracked', { files: list(untracked) }),
     t('echo.release.self', { n: r.selfBlocks ?? 0 }), t('echo.release.tree', { tree: tree.slice(0, 12) }), t('echo.release.verify', { hash: (r.verifyMdHash ?? '').slice(0, 8) }),
   ]
   // commit subjects are the agent's words
@@ -142,5 +148,6 @@ export async function applyRelease(h: FlowHost, a: Approval): Promise<string> {
   dropView()
   await mutateSession(h, () => emptySession())
   if (!ended.ok) throw new Error(`flow: pushed, but the record could not be ended (${ended.reason})`)
-  return `${fill(h.language, 'ship.done', { head: res.head.slice(0, 12), branch: branchOfRecord(r), url: r.frozen['remote.url'] ?? '' })}\n${fill(h.language, 'end.careful', {})}`
+  const left = await endTrees(h, r.root, r.flowId) // A1: the kept trees go once `.end` is written
+  return [fill(h.language, 'ship.done', { head: res.head.slice(0, 12), branch: branchOfRecord(r), url: r.frozen['remote.url'] ?? '' }), left, fill(h.language, 'end.careful', {})].filter(Boolean).join('\n')
 }

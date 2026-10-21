@@ -8,10 +8,12 @@ import type { Layer, Settings } from '../hooks/flow-sandbox'
 
 export const HOME = '/Users/u'
 export const ROOT = `${HOME}/proj`
-export const MOD_ROOT = `${HOME}/.claude/plugins/cache/m/snagon-dev-mods/0.5.3`
+export const MOD_ROOT = `${HOME}/.claude/plugins/cache/m/snagon-dev-mods/0.6.0`
 export const SESSION_ID = 'sess-1'
 export const FLOW_ID = 'a1b2c3d4'
 export const REPO_KEY = repoKeyOf(`${ROOT}/.git`)
+/** git's empty tree (SHA-1). */
+export const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
 /** The vendored files tickets quote (plan §8), as small stand-ins: each skill text names its skill; the testing reference
  * holds B1's sections and one section B1 does not get. */
 export const VENDOR_SHA = 'aeac41d4d005999432bb7312f7ff06383a91d59d'
@@ -33,13 +35,15 @@ export type FakeOpts = {
   files?: Record<string, string>; links?: Record<string, string>; linkCount?: Record<string, number>; os?: string; git?: boolean; claudeDir?: string; pluginDirs?: string
   language?: 'en' | 'vi'; placed?: boolean; usd?: number; branch?: string; sessionId?: string
   gitOut?: Record<string, string | RunResult>; settings?: Partial<Record<Layer | 'merged', Settings>>; envText?: string; missing?: string[]; journalDir?: string
-  run?: (argv: string[]) => RunResult | undefined
+  run?: (argv: string[], init?: { stdin?: string }) => RunResult | undefined
   /** What write-tree answers (the flow tree of the worktree). */
   tree?: string
   /** What write-tree answers for HEAD alone (no `add -A` since the read-tree); the worktree's tree when unset. */
   headTree?: string
   /** The host PATH entries the filtered PATH dropped (NK-02). */
   pathDropped?: string[]
+  /** The repository's refs (name → object id) for for-each-ref and update-ref --stdin (A1, NK-10). */
+  refs?: Record<string, string>
 }
 /** The git arguments of a hardened call: after `git`, the `-c name=value` pairs dropped. */
 export function gitArgs(argv: readonly string[]): string[] | null {
@@ -58,7 +62,17 @@ export function fakeHost(opts: FakeOpts = {}) {
   let state: { value: FlowSession | undefined; version: number } = { value: undefined, version: 0 }
   let tree = opts.tree ?? 'f'.repeat(40), headTree = opts.headTree, staged = false, usd: number | undefined = opts.usd ?? 1, clock = 1_000_000
   let cwd = ROOT
-  const isDir = (p: string): boolean => dirs.has(p) || [...files.keys(), ...links.keys()].some(k => k.startsWith(`${p}/`))
+  // A1, NK-10: the repository's refs, the objects git no longer has, and the commits (every other object is a tree)
+  const refs = new Map<string, string>(Object.entries(opts.refs ?? {})), missing = new Set<string>(), commits = new Set<string>()
+  const refLines = (pattern?: string): string => [...refs].filter(([n]) => !pattern || n === pattern || n.startsWith(`${pattern.replace(/\/$/, '')}/`)).sort(([a], [b]) => (a < b ? -1 : 1)).map(([n, o]) => `${o} ${n}\n`).join('')
+  // as git: one transaction, applied whole or not at all; an update to an object git does not have fails it
+  const updateRefs = (stdin: string): RunResult => {
+    const ops = stdin.split('\n').filter(Boolean).map(l => l.split(' '))
+    if (ops.some(([op, name = '', oid = '']) => !name || (op === 'update' ? !oid || missing.has(oid) : op !== 'delete'))) return done('', 128, 'fatal: update-ref transaction refused')
+    for (const [op, name = '', oid = ''] of ops) { if (op === 'update') refs.set(name, oid); else refs.delete(name) }
+    return done()
+  }
+  const isDir =(p: string): boolean => dirs.has(p) || [...files.keys(), ...links.keys()].some(k => k.startsWith(`${p}/`))
   /** The real path through links; null when a part is missing; undefined when a link leads nowhere. */
   const resolve = (path: string, depth = 0): string | null | undefined => {
     let cur = ''
@@ -87,17 +101,27 @@ export function fakeHost(opts: FakeOpts = {}) {
           return { name, kind: links.has(p) ? 'other' : isDir(p) ? 'dir' : 'file', size: files.get(p)?.length ?? 0, mtimeMs: 0 }
         })
       },
-      run: async argv => {
+      run: async (argv, init) => {
         runs.push(argv)
-        const own = opts.run?.(argv)
+        const own = opts.run?.(argv, init)
         if (own) return own
         const [cmd, ...a] = argv
         const g = gitArgs(argv)
         if (g && opts.gitOut && g.join(' ') in opts.gitOut) { const v = opts.gitOut[g.join(' ')]; return typeof v === 'string' ? done(v) : v ?? done('', 1) }
-        if (cmd === '/bin/sh' && a[1]?.startsWith('env |')) return done((opts.envText ?? 'PATH=/usr/bin:/bin\nHOME=/Users/u\n').split('\n').map(l => l.split('=')[0]).filter(Boolean).join('\n'))
+        if (cmd === '/bin/sh' && a[1]?.includes('/usr/bin/env |')) return done(`${(opts.envText ?? 'PATH=/usr/bin:/bin\nHOME=/Users/u\n').split('\n').map(l => l.split('=')[0]).filter(Boolean).join('\n')}\n=\n`)
+        // the registry-URL check (flow-setup.ts): each value is read in the child, which prints the names whose URL holds a password
+        if (cmd === '/bin/sh' && a[1]?.includes('/usr/bin/printenv')) {
+          const env = new Map((opts.envText ?? '').split('\n').filter(l => l.includes('=')).map(l => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1)] as const))
+          const names = a.slice(3)
+          if (names.some(n => !env.has(n))) return done('', 3, 'printenv: not set')
+          return done(`${names.filter(n => /[A-Za-z][A-Za-z0-9+.-]*:\/\/[^/\s]*:[^/\s@]+@/.test(env.get(n) ?? '')).map(n => `${n}\n`).join('')}=\n`)
+        }
         if (cmd === '/bin/sh' && a[1]?.startsWith('command -v')) return (opts.missing ?? []).includes(a[3] ?? '') ? done('', 1) : done(`/usr/local/bin/${a[3]}\n`)
         if (cmd === '/usr/bin/uname') return done(`${opts.os ?? 'Darwin'}\n`)
         if (cmd === '/usr/bin/readlink') return done('', 1) // no links among the fake's files
+        if (cmd === '/usr/bin/find') return done('') // no node_modules folder: the runner tree is 'absent'
+        // `stat -f %HT` without -L names a link or a folder itself, as lstat does
+        if (cmd === '/usr/bin/stat' && a.includes('%HT') && !a.includes('-L') && (links.has(a[a.length - 1] ?? '') || isDir(a[a.length - 1] ?? ''))) return done(links.has(a[a.length - 1] ?? '') ? 'Symbolic Link\n' : 'Directory\n')
         if (cmd === '/usr/bin/stat') { const p = a[a.length - 1] ?? '', r = resolve(p); return r && files.has(r) ? done(a.includes('%HT') ? 'Regular File\n' : `${opts.linkCount?.[r] ?? 1}\n`) : done('', 1, `stat: ${p}: No such file or directory`) }
         if (argv.includes('rev-parse')) return opts.git === false ? done('', 128, 'fatal: not a git repository') : done(`${ROOT}\n${ROOT}/.git\n${ROOT}/.git\n${ROOT}/.git/index\n`)
         if (argv.includes('symbolic-ref')) return opts.branch === '' ? done('', 1) : done(`${opts.branch ?? 'main'}\n`)
@@ -105,7 +129,12 @@ export function fakeHost(opts: FakeOpts = {}) {
         if (g?.[0] === 'read-tree') { staged = false; return done() }
         if (g?.[0] === 'add' && g[1] === '-A') { staged = true; return done() }
         if (g?.[0] === 'rm' && g[1] === '--cached') return done()
-        if (g?.[0] === 'write-tree') return done(`${staged ? tree : headTree ?? tree}\n`)
+        if (g?.[0] === 'write-tree') { const t = staged ? tree : headTree ?? tree; missing.delete(t); return done(`${t}\n`) } // written again
+        if (g?.[0] === 'for-each-ref') return done(refLines(g.find((x, i) => i > 0 && !x.startsWith('--'))))
+        if (g?.[0] === 'update-ref' && g.includes('--stdin')) return updateRefs(init?.stdin ?? '')
+        if (g?.[0] === 'cat-file' && g[1]?.startsWith('--batch-check')) return done((init?.stdin ?? '').split('\n').filter(Boolean).map(o => `${o} ${missing.has(o) ? 'missing' : commits.has(o) ? 'commit' : 'tree'}\n`).join(''))
+        if (g?.[0] === 'cat-file' && g[1] === '-e') return missing.has((g[2] ?? '').replace(/\^\{commit\}$/, '')) ? done('', 128, 'fatal: Not a valid object name') : done()
+        if (g?.[0] === 'hash-object') return done(`${EMPTY_TREE}\n`)
         if (g) return done('', 1)
         if (cmd === '/bin/mkdir') { dirs.add(a[a.length - 1] ?? ''); return done() }
         if (cmd === '/bin/rm') { for (const p of a.slice(1)) files.delete(p); return done() }
@@ -124,6 +153,8 @@ export function fakeHost(opts: FakeOpts = {}) {
           return done()
         }
         if (argv[0] === '/usr/bin/curl') return done('200') // the probe's control, run by the mod outside the sandbox (SEC13-1)
+        // reaping scans (R2 step 7): a working ps/lsof over a survivor-free environment, head/kill as no-ops
+        if (cmd === '/bin/ps' || cmd === '/usr/sbin/lsof' || cmd === '/bin/kill' || cmd === '/usr/bin/head') return done('')
         return done('', 127, `unexpected ${argv.join(' ')}`)
       },
       now: async () => clock,
@@ -149,7 +180,7 @@ export function fakeHost(opts: FakeOpts = {}) {
     runLong: async (argv, init) => host.io.run(argv, init),
   }
   return {
-    host, files, links, runs, panes, submitted, journal,
+    host, files, links, runs, panes, submitted, journal, refs, missing, commits,
     setTree: (t: string) => { tree = t }, setHeadTree: (t: string | undefined) => { headTree = t },
     setUsd: (n: number | undefined) => { usd = n }, setNow: (ms: number) => { clock = ms },
     session: () => state, setSession: (value: FlowSession) => { state = { value, version: state.version + 1 } }, cd: (to: string) => { cwd = to },
@@ -165,7 +196,7 @@ export function activeRecord(over: Partial<FlowRecord> = {}): FlowRecord {
       stack: 'typescript', commands: [{ id: 'test', argv: ['npm', 'test'], runner: 'vitest', mode: 'must-pass' }],
       allowTools: ['Read', 'Glob', 'Grep', 'Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'Bash', 'Agent', 'Task', 'Skill', 'TodoWrite', 'ToolSearch', 'AskUserQuestion'],
       allowMcp: [], journalDir: '.snagon/journal', remote: 'https://example.com/r.git', branch: 'main', pluginProject: false,
-      caps: { plan: { e: 3, r: 0, d: 0 }, feature: { e: 3, r: 3, d: 4 }, verify: { e: 2, r: 0, d: 3 } }, sessionCap: 15,
+      caps: { plan: { e: 3, r: 0, d: 0 }, feature: { e: 3, r: 3, d: 4 }, verify: { e: 2, r: 0, d: 3 } },
     },
     features: [{ id: 'F-01', key: 'key-f01', files: ['src/a.ts', 'tests/a.test.ts'] }],
     ...over,

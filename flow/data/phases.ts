@@ -26,7 +26,8 @@ export const TASKS: readonly Task[] = [
 ]
 
 /** Every blocked reason of plan §3.2 (and reportChanged: the verify report edited after V8, answered by /flow-verify);
- * each has an owner-facing text `blocked.<reason>` in both languages. */
+ * each has an owner-facing text `blocked.<reason>` in both languages. `cost`: nothing raises it since 2026-10-20 (no cost
+ * cap); it stays so an old record that holds it still reads. */
 export const BLOCKED_REASONS: readonly string[] = [
   'cap', 'dispute', 'frozenChanged', 'cmdSrc', 'remoteChanged', 'tooSlow', 'sandboxMismatch', 'probeInconclusive', 'sandboxKey', 'tampered',
   'couldNotRun', 'cost', 'redCheck', 'floor', 'junk', 'injection', 'redTestChanged', 'pushRejected', 'viewOnly',

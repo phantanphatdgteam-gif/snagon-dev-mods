@@ -95,6 +95,75 @@ describe('flow-setup: S1 detect', () => {
     expect(out.draft.allowMcp).toEqual(['mcp__gh__search'])
   })
 
+  test('a repo with package.json and pyproject.toml lists both stacks and is refused until stack=<id> picks one (AC-STK-15, GAP-R2-11)', async () => {
+    const both = { [`${ROOT}/pyproject.toml`]: '[project]\nname = "x"\n' }
+    const out = await detectSetup(world({ files: both }).host, ARGS)
+    expect(out.ok ? [] : out.refusals).toContain('several stacks match here (typescript, python); pick one with /flow-setup stack=<id>, for example stack=typescript')
+    const py = await detectSetup(world({ files: both }).host, { ...ARGS, stack: 'python' })
+    if (!py.ok) throw new Error(py.refusals.join('\n'))
+    expect([py.draft.stack, py.draft.stacks, py.draft.commands.map(c => c.argv.join(' '))]).toEqual(['python', ['typescript', 'python'], ['.venv/bin/pytest']])
+    expect(setupEcho(world().host, py.draft).lines[0]).toBe('Stack: python, picked with stack=python; also found here: typescript')
+    const ts = await detectSetup(world({ files: both }).host, { ...ARGS, stack: 'typescript' })
+    expect(ts.ok && [ts.draft.stack, ts.draft.commands[0]?.argv.join(' ')]).toEqual(['typescript', 'npm test'])
+  })
+
+  test('stack=<id> names a stack flow knows that this project matches; one stack found shows alone (AC-STK-15)', async () => {
+    const unknown = await detectSetup(world().host, { ...ARGS, stack: 'rust' })
+    expect(unknown.ok ? [] : unknown.refusals).toContain('stack=rust is not a stack flow knows (typescript, python)')
+    const absent = await detectSetup(world().host, { ...ARGS, stack: 'python' })
+    expect(absent.ok ? [] : absent.refusals).toContain('stack=python does not match this project (Python needs pyproject.toml, setup.py, setup.cfg, requirements*.txt or Pipfile); stacks found here: typescript')
+    const one = await detectSetup(world().host, { ...ARGS, stack: 'typescript' })
+    if (!one.ok) throw new Error(one.refusals.join('\n'))
+    expect([one.draft.stacks, setupEcho(world().host, one.draft).lines[0]]).toEqual([['typescript'], 'Stack: typescript'])
+  })
+
+  test('each command says where its results come from: a per-test report, or its exit code and output only (§4.5, AC-STK-12)', async () => {
+    const out = await detectSetup(world().host, ARGS)
+    if (!out.ok) throw new Error(out.refusals.join('\n'))
+    const none = '  results: its exit code and output only (no per-test report, so it proves no eval criterion)'
+    expect(setupEcho(world().host, out.draft).lines.slice(0, 10)).toEqual([
+      'Stack: typescript',
+      'test: npm test (runner vitest)', '  script: vitest run', '  results: one per test, from its JSON report',
+      'typecheck: npm run typecheck (runner tsc)', '  script: tsc --noEmit', none,
+      'lint: npm run lint (runner eslint)', '  script: eslint .', none,
+    ])
+  })
+
+  test('a setting that makes the git common dir writable is refused when the dir lies outside the project, as a worktree\'s does (S-12)', async () => {
+    const common = `${HOME}/main/.git`, settings = { user: { sandbox: { filesystem: { allowWrite: ['~/main'] } } } }
+    const worktree = (argv: readonly string[]) => (argv.includes('rev-parse') ? { exitCode: 0, stdout: `${ROOT}\n${common}\n${common}/worktrees/r\n${common}/worktrees/r/index\n`, stderr: '', isStdoutTruncated: false } : undefined)
+    const out = await detectSetup(world({ run: worktree, settings }).host, ARGS)
+    expect(out.ok ? '' : out.refusals.join('\n')).toContain('the user settings hold sandbox.filesystem.allowWrite "~/main": it gives write access to a protected folder')
+    expect((await detectSetup(world({ settings }).host, ARGS)).ok).toBe(true)
+  })
+
+  test('with two stacks and stack=typescript, Python credentials still refuse and its credential files stay hidden (AC-STK-10, AC-STK-15, security review r2)', async () => {
+    const files = { [`${ROOT}/pyproject.toml`]: '[project]\nname = "x"\n', [`${ROOT}/.pypirc`]: '[pypi]\npassword = p\n' }
+    const out = await detectSetup(world({ files, envText: 'PATH=/usr/bin\nPIP_INDEX_URL=https://u:s3cret@pypi.corp/simple\n' }).host, { ...ARGS, stack: 'typescript' })
+    const text = out.ok ? '' : out.refusals.join('\n')
+    expect(text).toContain('registry credentials are set in the environment: PIP_INDEX_URL; unset them for this session')
+    expect(text).toContain('.pypirc holds a registry credential; move it to your user config')
+    const clean = await detectSetup(world({ files: { [`${ROOT}/pyproject.toml`]: '[project]\nname = "x"\n' } }).host, { ...ARGS, stack: 'typescript' })
+    if (!clean.ok) throw new Error(clean.refusals.join('\n'))
+    expect(clean.draft.block.filesystem.denyRead).toEqual(expect.arrayContaining(['~/.npmrc', '~/.config/pip', '~/.config/uv']))
+    expect(clean.draft.block.network.allowedDomains).toEqual(['registry.npmjs.org'])
+  })
+
+  test('an unknown stack= still shows what is wrong with the stacks here: none, or several (code review r3)', async () => {
+    forgetFlowCaches()
+    const bare = await detectSetup(fakeHost({ gitOut: GIT }).host, { ...ARGS, stack: 'rust' })
+    const text = bare.ok ? '' : bare.refusals.join('\n')
+    expect(text).toContain('stack=rust is not a stack flow knows (typescript, python)')
+    expect(text).toContain('no supported stack here (TypeScript needs package.json or tsconfig.json; Python needs')
+    const both = await detectSetup(world({ files: { [`${ROOT}/pyproject.toml`]: '[project]\nname = "x"\n' } }).host, { ...ARGS, stack: 'rust' })
+    expect(both.ok ? '' : both.refusals.join('\n')).toContain('several stacks match here (typescript, python)')
+  })
+
+  test('a variable name with characters outside [A-Za-z0-9_], as npm\'s per-registry token, is listed and refused (security review r3)', async () => {
+    const out = await detectSetup(world({ envText: 'PATH=/usr/bin\nnpm_config_//registry.npmjs.org/:_authToken=x\n' }).host, ARGS)
+    expect(out.ok ? [] : out.refusals).toContain('registry credentials are set in the environment: npm_config_//registry.npmjs.org/:_authToken; unset them for this session')
+  })
+
   test('every refusal is listed at once, in the owner\'s words', async () => {
     const w = world({
       branch: '', envText: 'PATH=/usr/bin\nNPM_TOKEN=x\n', journalDir: '.snagon/flow',
@@ -149,7 +218,8 @@ describe('flow-setup: the echo and the draft view', () => {
     expect(text).toMatch(/Sandbox block for \.claude\/settings\.local\.json \(before absent, after [0-9a-f]{8}\):/)
     expect(text).toContain('"allowUnsandboxedCommands": false')
     expect(text).toContain('A release goes to https://github.com/o/r.git, branch main')
-    expect(text).toContain('Rounds: plan edit 3; each feature edit 3, review 3, debug 4; verify edit 2, debug 3. Session cost cap $15')
+    expect(text).toContain('Rounds: plan edit 3; each feature edit 3, review 3, debug 4; verify edit 2, debug 3')
+    expect(text).not.toMatch(/cost cap/i) // the setup echo names no session cost cap (owner decision 2026-10-20)
     const again = await detectSetup(w.host, ARGS)
     expect(again.ok && (await echoHash(setupEcho(w.host, again.draft)))).toBe(await echoHash(echo))
   })

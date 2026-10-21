@@ -3,7 +3,7 @@ import { flowCheck, modChange } from '../hooks/flow-check'
 import { PROBE_COMMAND } from '../hooks/flow-sandbox'
 import { sha256 } from '../hooks/flow-review'
 import { HOME, MOD_ROOT, ROOT, recordFile } from './flow-fakes'
-import { approved, latest, LOCAL, run, RUN, toS3, world, writeLocal, type W } from './flow-drive'
+import { approved, latest, LOCAL, nodeModules, run, RUN, toS3, world, writeLocal, type W } from './flow-drive'
 
 const SHA = 'a'.repeat(40)
 const HEAD = { 'rev-parse --verify -q HEAD^{commit}': `${SHA}\n` }
@@ -26,8 +26,11 @@ describe('flow-baseline: S3 through flow_check', () => {
     const [t = [], l = []] = judgedRuns(w)
     expect(judgedRuns(w)).toHaveLength(2)
     expect(t.slice(0, 5)).toEqual(['/usr/bin/env', '-i', 'PATH=/usr/bin:/bin', `HOME=${HOME}`, `TMPDIR=${RUN}`])
-    expect(t.slice(t.indexOf('-p') + 2)).toEqual(['npm', 'test', '--', '--reporter=default', '--reporter=json', `--outputFile.json=${RUN}/report.json`])
-    expect(l.slice(l.indexOf('-p') + 2)).toEqual(['npm', 'run', 'lint', '--', `--cache-location=${RUN}/eslintcache`])
+    expect(t[t.indexOf('-p') + 2]).toBe('/bin/sh') // the judged command leads its own process group (GAP-R2-0.6-26)
+    expect(t[t.indexOf('-p') + 4]).toContain('set -m')
+    const real = (a: string[]): string[] => a.slice(a.indexOf('-p') + 6) // past -p <profile> /bin/sh -c <launcher> sh
+    expect(real(t)).toEqual(['npm', 'test', '--', '--reporter=default', '--reporter=json', `--outputFile.json=${RUN}/report.json`])
+    expect(real(l)).toEqual(['npm', 'run', 'lint', '--', `--cache-location=${RUN}/eslintcache`])
     const profile = t[t.indexOf('-p') + 1] ?? ''
     expect(profile).toContain(`(allow file-write* (subpath "${ROOT}") (subpath "${RUN}")`)
     expect(profile).toContain(`(subpath "${HOME}/.npmrc")`)
@@ -86,21 +89,36 @@ describe('flow-baseline: what every flow_check checks first', () => {
     expect(judgedRuns(w)).toEqual([])
   })
 
-  test('a changed runner package blocks before anything runs', async () => {
-    let installed = false
-    const w = world({
-      gitOut: { ...HEAD },
-      run: argv => {
-        if (!installed || argv[0] !== '/bin/sh') return undefined
-        if ((argv[2] ?? '').startsWith('for d in')) return { exitCode: 0, stdout: argv.slice(4).map(d => (d.endsWith('/node_modules/vitest') ? d : '')).join('\n'), stderr: '' }
-        return (argv[2] ?? '').includes('shasum') ? { exitCode: 0, stdout: 'f00d  -\n', stderr: '' } : undefined
-      },
-    })
+  test('AC-RI-1, AC-STK-9: a changed file anywhere in node_modules blocks tampered before anything runs', async () => {
+    const t = { hash: 'a'.repeat(64) }
+    const w = world({ gitOut: { ...HEAD }, run: nodeModules(t) })
     await toS3(w)
-    installed = true
+    expect(latest(w)?.frozen['runner:v2']).toBe('a'.repeat(64))
+    t.hash = 'b'.repeat(64)
     await check(w)
-    expect(latest(w)?.blocked).toEqual({ reason: 'cmdSrc', vars: { file: 'runner' } })
+    expect(latest(w)?.blocked).toEqual({ reason: 'tampered', vars: { file: 'node_modules' } })
     expect(judgedRuns(w)).toEqual([])
+  })
+
+  test('a tree that cannot be pinned any more (a read error, a link out of it: S-13) blocks tampered with what failed', async () => {
+    const t = { hash: 'a'.repeat(64) }
+    const w = world({ gitOut: { ...HEAD }, run: nodeModules(t) })
+    await toS3(w)
+    t.hash = `link\t${ROOT}/node_modules/x/index.js\t/tmp/x.js`
+    await check(w)
+    expect(latest(w)?.blocked).toEqual({ reason: 'tampered', vars: { file: `${ROOT}/node_modules/x/index.js (/tmp/x.js)` } })
+  })
+
+  test('a record frozen before 0.6.0 (only `runner`) is compared the old way until its re-freeze (GAP-R2-0.6-27)', async () => {
+    for (const [runner, blocked] of [['absent', undefined], ['f00d', { reason: 'tampered', vars: { file: 'node_modules' } }]] as const) {
+      const w = world({ gitOut: { ...HEAD }, judge: { test: { exit: 0, report: GREEN } } })
+      const r0 = await toS3(w)
+      if (!r0) throw new Error('no record at S3')
+      const { 'runner:v2': _v, 'runner:v2.facts': _f, 'runner:v2.load': _l, ...rest } = r0.frozen
+      for (const [k, v] of Object.entries(recordFile({ ...r0, frozen: { ...rest, runner } }))) w.files.set(k, v)
+      await check(w)
+      expect(latest(w)?.blocked).toEqual(blocked)
+    }
   })
 
   test('changed plugin files block as tampered', async () => {
